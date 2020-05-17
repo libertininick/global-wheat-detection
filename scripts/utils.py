@@ -4,6 +4,7 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from PIL import Image
 
 
 def get_bbs(df_summary, image_id):
@@ -98,6 +99,8 @@ def draw_bb(ax, bb):
 def blur_bbs(im, bbs):
     """Blur all regions inside bounding boxes
     """
+    im = np.array(im, dtype=np.uint8)
+    
     h, w, _ = im.shape
     window_h, window_w = int(((h*0.2)//2)*2 + 1), int(((w*0.2)//2)*2 + 1)
     blur = cv2.GaussianBlur(im, (window_h, window_w), 0)
@@ -109,4 +112,4 @@ def blur_bbs(im, bbs):
 
     smooth = cv2.GaussianBlur(im, (5, 5), 0)
     
-    return smooth
+    return Image.fromarray(np.uint8(smooth))
