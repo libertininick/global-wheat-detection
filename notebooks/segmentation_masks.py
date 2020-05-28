@@ -53,7 +53,7 @@ image_ids = np.unique(df_summary['image_id'].values)
 
 
 # +
-im_id = image_ids[6]
+im_id = image_ids[1]
 im_pil = Image.open(f'''{DATA_PATH}/train/{im_id}.jpg''')
 im_np = np.array(im_pil, dtype=np.uint8)
 print(im_np.shape)
@@ -70,10 +70,10 @@ for bb in bbs:
 # # Segment objects
 
 # +
-mask = utils.bbs_to_segmentation_mask(im_np, bbs)
+mask = utils.segmentation_heat_map(im_np, bbs)
 
 fig, ax = plt.subplots(figsize=(10, 10))
-im = ax.imshow(mask, cmap='gray')
+im = ax.imshow(mask, cmap='gray', vmin=0, vmax=2)
 
 for bb in bbs:
     utils.draw_bb(ax, bb)
@@ -87,9 +87,9 @@ for i, im_id in enumerate(image_ids):
     im_np = np.array(im_pil, dtype=np.uint8)
     bbs = utils.get_bbs(df_summary, im_id)
     
-    mask = utils.bbs_to_segmentation_mask(im_np, bbs)
+    mask = utils.segmentation_heat_map(im_np, bbs)
     
-    scipy.sparse.save_npz(f'../data/train_masks/{im_id}.npz', scipy.sparse.csc_matrix(mask))
+    scipy.sparse.save_npz(f'../data/segmentation_heatmaps/{im_id}.npz', scipy.sparse.csc_matrix(mask))
     
     if (i+1)%100 == 0:
         print(i+1)
