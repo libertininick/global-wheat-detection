@@ -42,7 +42,7 @@ for part in path_parts[1:]:
         sys.path.append(p)
         
 import global_wheat_detection.scripts.utils as utils
-import global_wheat_detection.scripts.data_augmentation as aug
+import global_wheat_detection.scripts.preprocessing as pp
 # -
 
 # # Data
@@ -62,7 +62,7 @@ holdout_ids = list(image_ids.keys())[-373:]
 
 # # Data Augmentation
 
-da = aug.DataAugmentor()
+da = pp.DataAugmentor()
 
 # +
 ims, seg_masks, bboxes = [],[],[]
@@ -89,6 +89,10 @@ for i in range(4):
     
 # -
 
+loader = pp.DataLoader(path=DATA_PATH, seed=123)
+
+ims_aug, masks_aug, bboxes_aug = loader.load_batch(8)
+
 ims_aug, masks_aug, bboxes_aug = da.augment_batch(ims, seg_masks, bboxes)
 
 # +
@@ -102,7 +106,7 @@ for i in range(4):
     
     _ = axs[i][1].imshow(masks_aug[i], cmap='gray', vmin=0)
 # -
-
+np.random.choice()
 
 
 # +

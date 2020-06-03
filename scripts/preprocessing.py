@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image
+
+import global_wheat_detection.scripts.utils as utils
 
 
 def normalize_bboxes(bboxes, h, w):
@@ -366,8 +369,11 @@ def sharpen(im):
 class DataAugmentor():
     def __init__(self
                 , resolutions=[0.25, 0.5, 0.75, 1]
+                , p=[0.1, 0.5, 0.3, 0.1]
                 , seed=None
                 ):
+        self.resolutions = resolutions
+        self.p = p
         self.rnd = np.random.RandomState(seed)
 
     def _random_crop_dims(self, h_o, w_o, h, w):
@@ -451,24 +457,35 @@ class DataAugmentor():
         
         return im_cropped, mask_cropped, bboxes_cropped
 
-    def augment_image(self, im, seg_mask, bboxes):
+    def augment_image(self, im, seg_mask, bboxes, scale_percent=1):
         """Apply augmentation pipeline to a single image and its bounding boxes
         """
+        im_aug, mask_aug, bbs_aug = im.copy(), seg_mask.copy(), bboxes.copy()
 
         # Augment colors
-        b, c, h, s = np.tanh(self.rnd.randn(4)*0.1)
-        im_aug = adjust_color(im, b, c, h, s)
+        if self.rnd.rand() < 0.5:
+            b, c, h, s = np.tanh(self.rnd.randn(4)*0.1)
+            im_aug = adjust_color(im, b, c, h, s)
 
         # Blur
-        blur_p = self.rnd.rand()**2*0.03
-        im_aug = blur(im_aug, blur_p)
+        if self.rnd.rand() < 0.5:
+            blur_p = self.rnd.rand()**2*0.03
+            im_aug = blur(im_aug, blur_p)
 
         # Rotate
-        angle = self.rnd.randint(low=0, high=360)
-        im_aug, mask_aug, bbs_aug = self.rotate(im_aug, seg_mask, bboxes, angle)
+        if self.rnd.rand() < 0.5:
+            angle = self.rnd.randint(low=0, high=360)
+            im_aug, mask_aug, bbs_aug = self.rotate(im_aug, mask_aug, bbs_aug, angle)
 
         # Crop & Resize
-        im_aug, mask_aug, bbs_aug = self.random_crop_resize(im_aug, mask_aug, bbs_aug)
+        if self.rnd.rand() < 0.5:
+            im_aug, mask_aug, bbs_aug = self.random_crop_resize(im_aug, mask_aug, bbs_aug)
+
+        # Change resolution
+        h_o, w_o = im_aug.shape[:2]
+        im_aug = resize_im(im_aug, scale_percent)
+        mask_aug = resize_im(mask_aug, scale_percent)
+        bbs_aug = resize_bboxes(bbs_aug, h_o, w_o, *im_aug.shape[:2])
 
         return im_aug, mask_aug, bbs_aug
 
@@ -516,17 +533,61 @@ class DataAugmentor():
         return im_puzzles, mask_puzzles, bb_puzzles
 
     def augment_batch(self, ims, seg_masks, bboxes):
-        augs = [self.augment_image(im, seg_mask, bbs) 
+        # Choose resolution
+        res = self.rnd.choice(self.resolutions, size=1, p=self.p).item(0)
+        
+        augs = [self.augment_image(im, seg_mask, bbs, res) 
                 for im, seg_mask, bbs 
                 in zip(ims, seg_masks, bboxes)
                ]
 
-        im_puzzles, mask_puzzles, bb_puzzles = [],[],[]
-        for idx in range(0, len(augs), 4):
-            
-            i, m, b = self.random_puzzles(*zip(*augs[idx:idx+4]))
-            im_puzzles.extend(i)
-            mask_puzzles.extend(m)
-            bb_puzzles.extend(b)
+        if self.rnd.rand() < 0.5:
+            im_puzzles, mask_puzzles, bb_puzzles = [],[],[]
+            for idx in range(0, len(augs), 4):
+                
+                i, m, b = self.random_puzzles(*zip(*augs[idx:idx+4]))
+                im_puzzles.extend(i)
+                mask_puzzles.extend(m)
+                bb_puzzles.extend(b)
 
-        return im_puzzles, mask_puzzles, bb_puzzles
+            return im_puzzles, mask_puzzles, bb_puzzles
+        else:
+            return zip(*augs)
+
+
+class DataLoader():
+    def __init__(self, path, seed=None):
+        self.augmentor = DataAugmentor()
+        self.rnd = np.random.RandomState(seed)
+        self.path = path
+        
+        self.df_summary = pd.read_csv(f'{path}/train.csv')
+
+        image_ids = dict()
+        for _, (im_id, *o, source) in self.df_summary.iterrows():
+            image_ids[im_id] = source  
+
+        self.train_ids = list(image_ids.keys())[:-373]
+        self.valid_ids = list(image_ids.keys())[-373:]
+
+    def load_batch(self, batch_size, split='train'):
+
+        ims, seg_masks, bboxes = [],[],[]
+        for im_id in self.rnd.choice(self.train_ids, size=batch_size):
+            im = Image.open(f'''{self.path}/{split}/{im_id}.jpg''')
+            im = np.array(im, dtype=np.uint8)
+            ims.append(im)
+            
+            bbs = utils.get_bbs(self.df_summary, im_id)
+            bboxes.append(bbs)  
+            
+            seg_masks.append(utils.segmentation_heat_map(im, bbs))
+
+        ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes)
+
+        #TODO: Normalize
+        #TODO: ToTensor
+        #TODO: Bboxes to targets
+
+        return ims_aug, masks_aug, bboxes_aug
+
