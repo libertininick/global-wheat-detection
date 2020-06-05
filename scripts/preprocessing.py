@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
+import torch
+import torch.nn as nn
+from torchvision import transforms
 
 import global_wheat_detection.scripts.utils as utils
 
@@ -558,6 +561,20 @@ class DataAugmentor():
 class DataLoader():
     def __init__(self, path, seed=None):
         self.augmentor = DataAugmentor()
+        self.cropper =  transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224)])
+        self.normalizer = transforms.Compose([ transforms.ToTensor()
+                                             , transforms.Normalize(mean=[0.485, 0.456, 0.406]
+                                                                   , std=[0.229, 0.224, 0.225]
+                                                                   )
+                                            ])
+        # Load pre-trained VGG
+        vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
+        vgg.eval()
+        modules = list(vgg.features.children())
+        self.feature_model = nn.Sequential(*modules)[:52]
+        self.layer_wts = np.load(f'{path}/vgg19_feature_layer_wts.npz')
+        self.wts_keys = list(self.layer_wts.keys())
+        
         self.rnd = np.random.RandomState(seed)
         self.path = path
         
@@ -569,6 +586,20 @@ class DataLoader():
 
         self.train_ids = list(image_ids.keys())[:-373]
         self.valid_ids = list(image_ids.keys())[-373:]
+
+    @torch.no_grad()
+    def _pretained_targets(self, ims):
+        x = torch.stack([self.normalizer(self.cropper(Image.fromarray(im))) for im in ims], dim=0)
+        x = self.feature_model(x)
+
+        # Sample layer weights
+        wts_key = self.rnd.choice(self.wts_keys, size=1).item(0)
+        wts = self.layer_wts[wts_key]
+        wts /= np.mean(wts)
+        wts = torch.from_numpy(wts).view(1,-1,1,1)
+        x = x*wts
+
+        return x
 
     def load_batch(self, batch_size, split='train'):
 
@@ -585,9 +616,12 @@ class DataLoader():
 
         ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes)
 
-        #TODO: Normalize
-        #TODO: ToTensor
+        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
+
+        y_pretrained = self._pretained_targets(ims_aug)
+        y_mask = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)
+
         #TODO: Bboxes to targets
 
-        return ims_aug, masks_aug, bboxes_aug
+        return x, y_pretrained, y_mask
 
