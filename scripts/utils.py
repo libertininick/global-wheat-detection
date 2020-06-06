@@ -61,6 +61,7 @@ def iou(box_a, box_b):
     
     return iou
 
+
 def iou_pairs(boxes_pred, boxes_true):
     """Calculates the IoU between every pair of predictions and ground truth objects
     
@@ -75,6 +76,7 @@ def iou_pairs(boxes_pred, boxes_true):
     
     ious = [[iou(bb_p, bb_t) for bb_t in boxes_true] for bb_p in boxes_pred]
     return np.array(ious)
+
 
 def precision(ious, confidence_levels=None, iou_threshold=0.5):
     """Calculates the prediction precision for a specific IoU threshold
@@ -218,6 +220,28 @@ def blur_bbs(im, bbs):
     smooth = cv2.GaussianBlur(im, (5, 5), 0)
     
     return Image.fromarray(np.uint8(smooth))
+
+
+def bb_preds_to_dims(area_ratio, side_ratio, w, h, area_scale=10):
+    """Converts sigmoid prediction in bbox w, h dims
+
+    Args:
+        area_ratio (float): ((bb_w*bb_h)/(im_w*im_h))**(1/area_scale)
+        side_ratio (float): bb_w/(bb_w + bb_h)
+        w (int): Image width
+        h (int): Image height
+        area_scale (int): Root used to scale area ratio
+
+    Returns:
+        bb_w_pred (int)
+        bb_h_pred (int)
+    """
+    area_pred = area_ratio**area_scale*w*h
+    coeff = [1 - side_ratio, 0, -side_ratio*area_pred]
+    w_pred = np.round(max(np.roots(coeff)))
+    h_pred = np.round(area_pred/w_pred)
+    
+    return w_pred, h_pred
 #endregion
 
 
