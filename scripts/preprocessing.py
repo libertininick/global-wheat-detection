@@ -567,11 +567,18 @@ class DataLoader():
                                                                    , std=[0.229, 0.224, 0.225]
                                                                    )
                                             ])
+
+        # Set device
+        self.device = 'cpu'
+        if torch.cuda.is_available():
+            self.device = 'cuda:0'
+
         # Load pre-trained VGG
         vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
         vgg.eval()
         modules = list(vgg.features.children())
         self.feature_model = nn.Sequential(*modules)[:52]
+        self.feature_model.to(self.device) # Move model to GPU
         self.layer_wts = np.load(f'{path}/vgg19_feature_layer_wts.npz')
         self.wts_keys = list(self.layer_wts.keys())
         
@@ -590,7 +597,12 @@ class DataLoader():
     @torch.no_grad()
     def _pretained_targets(self, ims):
         x = torch.stack([self.normalizer(self.cropper(Image.fromarray(im))) for im in ims], dim=0)
+        x = x.to(self.device)
         x = self.feature_model(x)
+        x = x.to('cpu')
+
+        if self.device != 'cpu':
+            torch.cuda.empty_cache()
 
         # Sample layer weights
         wts_key = self.rnd.choice(self.wts_keys, size=1).item(0)
@@ -603,6 +615,7 @@ class DataLoader():
 
     def load_batch(self, batch_size, split='train'):
 
+        # Load from disk
         ims, seg_masks, bboxes = [],[],[]
         for im_id in self.rnd.choice(self.train_ids, size=batch_size):
             im = Image.open(f'''{self.path}/{split}/{im_id}.jpg''')
@@ -614,8 +627,10 @@ class DataLoader():
             
             seg_masks.append(utils.segmentation_heat_map(im, bbs))
 
+        # Data augmentation
         ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes)
 
+        # Tensors
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
 
         y_pretrained = self._pretained_targets(ims_aug)
@@ -623,5 +638,5 @@ class DataLoader():
 
         #TODO: Bboxes to targets
 
-        return x, y_pretrained, y_mask
+        return x, y_pretrained, y_mask, bboxes_aug
 
