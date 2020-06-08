@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.2
+#       jupytext_version: 1.4.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -64,7 +64,7 @@ fig, ax = plt.subplots(figsize=(10, 10))
 im = ax.imshow(im_np)
 
 for bb in bbs:
-    utils.draw_bb(ax, bb)
+    utils.draw_bboxes(ax, bb)
 # -
 
 # # Segment objects
@@ -76,7 +76,7 @@ fig, ax = plt.subplots(figsize=(10, 10))
 im = ax.imshow(mask, cmap='gray', vmin=0, vmax=2)
 
 for bb in bbs:
-    utils.draw_bb(ax, bb)
+    utils.draw_bboxes(ax, bb)
 # -
 
 # # Save masks
