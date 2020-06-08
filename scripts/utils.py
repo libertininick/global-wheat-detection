@@ -172,7 +172,7 @@ def mAP(y_pred, y_true, iou_thresholds=np.arange(50, 80, 5)/100):
 
 
 #region Bounding Boxes
-def get_bbs(df_summary, image_id):
+def get_bboxes(df_summary, image_id):
     """Gets the bounding boxes for an image
 
     Args:
@@ -190,20 +190,15 @@ def get_bbs(df_summary, image_id):
     return bbs
 
 
-def slice_to_bb(im, bb):
-    j, i, w, h = bb
-    return im[i:i+h, j:j+w]
-
-
-def draw_bb(ax, bb, color='r'):
+def draw_bboxes(ax, bbox, color='r'):
     """Draws bounding box on an image
     """
-    *cords, w, h = bb
+    *cords, w, h = bbox
     rect = patches.Rectangle(cords, w, h, linewidth=2, edgecolor=color, facecolor='none')
     ax.add_patch(rect)
 
 
-def blur_bbs(im, bbs):
+def blur_bboxes(im, bboxes):
     """Blur all regions inside bounding boxes
     """
     im = np.array(im, dtype=np.uint8)
@@ -212,7 +207,7 @@ def blur_bbs(im, bbs):
     window_h, window_w = int(((h*0.2)//2)*2 + 1), int(((w*0.2)//2)*2 + 1)
     blur = cv2.GaussianBlur(im, (window_h, window_w), 0)
     
-    for bb in bbs:
+    for bb in bboxes:
         # Fill in portion of image with blurred image 
         j, i, w, h = bb
         im[i:i+h, j:j+w] = blur[i:i+h, j:j+w]
@@ -222,7 +217,70 @@ def blur_bbs(im, bbs):
     return Image.fromarray(np.uint8(smooth))
 
 
-def bb_preds_to_dims(area_ratio, side_ratio, w, h, area_scale=10):
+def normalize_bboxes(bboxes, h, w):
+    """Normalize bounding boxes to an image's height and width
+    
+    Args:
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
+        h (int): Image height
+        w (int): Image width
+
+    Returns:
+        bboxes (ndarray): (N, 4)
+    """
+    bbox_norms = np.array(bboxes)/np.array([w, h, w, h])
+    
+    return bbox_norms
+
+
+def bbox_targets(bboxes, h, w, model_downsample=2, area_scale=10):
+    """Builds centroid mask, area ratio regression mesh, and 
+    side ratio regression mesh for a list of bounding boxes
+    
+    Args:
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
+        h (int): Image height
+        w (int): Image width
+        model_downsample (int): Downs
+        area_scale=10
+
+    Returns:
+        centroid_mask (ndarray): (h//model_downsample, w//model_downsample)
+        area_ratios_mesh (ndarray): (h//model_downsample, w//model_downsample)
+        side_ratios_mesh (ndarray): (h//model_downsample, w//model_downsample)
+    """
+    # Factor in downsampling of image as it passes through model
+    h_ds, w_ds = h//model_downsample, w//model_downsample
+
+    # Normalize bounding boxes for original height and width of image
+    bboxes_norm = normalize_bboxes(bboxes, h, w)
+    
+    # Centroid mask for NLLLoss 
+    centroid_mask = np.zeros((h_ds, w_ds), dtype=np.int64)
+    centroid_idxs = bboxes_norm[:, :2]
+    centroid_idxs[:,0] += bboxes_norm[:, 2]/2
+    centroid_idxs[:,1] += bboxes_norm[:, 3]/2
+    centroid_idxs = np.floor(centroid_idxs*np.array([h_ds, w_ds])).astype(np.uint8)
+    centroid_mask[centroid_idxs[:,0], centroid_idxs[:,1]] = 1
+
+    # Area ratios mesh for MSE
+    area_ratios = np.prod(bboxes_norm[:,-2:], axis=1)**(1/area_scale)
+    area_ratios_mesh = np.zeros((h_ds, w_ds), dtype=np.float32)
+    area_ratios_mesh[centroid_idxs[:,0], centroid_idxs[:,1]] = area_ratios
+
+    # Side ratios mesh for MSE 
+    side_ratios = bboxes_norm[:,2]/np.sum(bboxes_norm[:,-2:], axis=1)
+    side_ratios_mesh = np.zeros((h_ds, w_ds), dtype=np.float32)
+    side_ratios_mesh[centroid_idxs[:,0], centroid_idxs[:,1]] = side_ratios
+
+    return centroid_mask, area_ratios_mesh, side_ratios_mesh
+
+
+def bbox_pred_to_dims(area_ratio, side_ratio, w, h, area_scale=10):
     """Converts sigmoid prediction in bbox w, h dims
 
     Args:
@@ -238,8 +296,8 @@ def bb_preds_to_dims(area_ratio, side_ratio, w, h, area_scale=10):
     """
     area_pred = area_ratio**area_scale*w*h
     coeff = [1 - side_ratio, 0, -side_ratio*area_pred]
-    w_pred = np.round(max(np.roots(coeff)))
-    h_pred = np.round(area_pred/w_pred)
+    w_pred = int(np.round(max(np.roots(coeff))))
+    h_pred = int(np.round(area_pred/w_pred))
     
     return w_pred, h_pred
 #endregion
@@ -262,21 +320,24 @@ def remove_noise(im, kernel=np.ones((3,3), np.uint8), iterations=2):
     return im_denoise
 
 
-def segmentation_heat_map(im, bbs, kernel=np.ones((5,5), dtype=np.uint8)):
+def segmentation_heat_map(im, bboxes, kernel=np.ones((5,5), dtype=np.uint8)):
     """Converts instance bounding boxes in an image to a single segmentation mask
 
     Args:
         im (ndarray): Numpy array of image (colors, height, width)
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
     """
 
     # Initialize mask with all 0s
     mask = np.zeros(im.shape[:2], dtype=np.float32)
     
-    for bb in bbs:
+    for bb in bboxes:
         # Fill in portion of mask associated with bb segment
-        j, i, w, h = bb
+        x, y, w, h = bb
         
-        im_slice = im[i:i+h, j:j+w]
+        im_slice = im[y:y+h, x:x+w]
         im_slice = binarize(im_slice)
         im_slice = remove_noise(im_slice)
 
@@ -285,7 +346,7 @@ def segmentation_heat_map(im, bbs, kernel=np.ones((5,5), dtype=np.uint8)):
 
         mask_slice = (im_dilated + im_slice + im_eroded)/3
 
-        mask[i:i+h, j:j+w] += mask_slice
+        mask[y:y+h, x:x+w] += mask_slice
 
     return mask
 #endregion
