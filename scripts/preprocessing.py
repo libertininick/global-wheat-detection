@@ -9,45 +9,6 @@ from torchvision import transforms
 import global_wheat_detection.scripts.utils as utils
 
 
-def normalize_bboxes(bboxes, h, w):
-    """Normalize bounding boxes to an image's height and width
-    
-    Args:
-        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
-                          where N is the number of bounding boxes and the boxes 
-                          are represented in the format `x, y, w, h`
-        h (int): Image height
-        w (int): Image width
-    """
-    bbox_norms = np.array(bboxes)/np.array([w, h, w, h])
-    
-    return bbox_norms
-
-
-def get_corners(bboxes):
-    """Get corners of bounding boxes
-    
-    Args:
-        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
-                          where N is the number of bounding boxes and the boxes 
-                          are represented in the format `x, y, w, h`
-    
-    Returns:
-        corners (ndarray): Numpy array of shape `N x 8` containing N bounding boxes each
-                           described by its corner co-ordinates `x1 y1 x2 y2 x3 y3 x4 y4`      
-        
-    """
-    w, h = bboxes[:,2], bboxes[:,3]
-    x1, y1 = bboxes[:,0], bboxes[:,1]
-    x2, y2 = x1 + w, y1
-    x3, y3 = x1, y1 + h
-    x4, y4 = x1 + w, y1 + h
-    
-    corners = np.stack((x1, y1, x2, y2, x3, y3, x4, y4), axis=1)
-
-    return corners
-
-
 #region Crop
 def center_crop(im, h, w):
     """Center crop an image to (h, w).
@@ -158,7 +119,7 @@ def resize_im(im, scale_percent):
 
 
 def resize_bboxes(bboxes, h_o, w_o, h, w):
-    bbox_norms = normalize_bboxes(bboxes, h_o, w_o)
+    bbox_norms = utils.normalize_bboxes(bboxes, h_o, w_o)
     bbox_scaled = np.round(bbox_norms*np.array([w, h, w, h]))
     
     return bbox_scaled
@@ -203,6 +164,30 @@ def rotate_im(im, angle):
     im_rotated= cv2.warpAffine(im, M, (w, h))
 
     return im_rotated
+
+
+def get_corners(bboxes):
+    """Get corners of bounding boxes
+    
+    Args:
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
+    
+    Returns:
+        corners (ndarray): Numpy array of shape `N x 8` containing N bounding boxes each
+                           described by its corner co-ordinates `x1 y1 x2 y2 x3 y3 x4 y4`      
+        
+    """
+    w, h = bboxes[:,2], bboxes[:,3]
+    x1, y1 = bboxes[:,0], bboxes[:,1]
+    x2, y2 = x1 + w, y1
+    x3, y3 = x1, y1 + h
+    x4, y4 = x1 + w, y1 + h
+    
+    corners = np.stack((x1, y1, x2, y2, x3, y3, x4, y4), axis=1)
+
+    return corners
 
 
 def rotate_corners(corners, angle, cx, cy, h, w):
@@ -371,12 +356,8 @@ def sharpen(im):
 
 class DataAugmentor():
     def __init__(self
-                , resolutions=[0.25, 0.5, 0.75, 1]
-                , p=[0.1, 0.5, 0.3, 0.1]
                 , seed=None
                 ):
-        self.resolutions = resolutions
-        self.p = p
         self.rnd = np.random.RandomState(seed)
 
     def _random_crop_dims(self, h_o, w_o, h, w):
@@ -535,11 +516,10 @@ class DataAugmentor():
 
         return im_puzzles, mask_puzzles, bb_puzzles
 
-    def augment_batch(self, ims, seg_masks, bboxes):
-        # Choose resolution
-        res = self.rnd.choice(self.resolutions, size=1, p=self.p).item(0)
-        
-        augs = [self.augment_image(im, seg_mask, bbs, res) 
+    def augment_batch(self, ims, seg_masks, bboxes, resolution_out):
+
+        scale_percent = resolution_out/ims[0].shape[-1]
+        augs = [self.augment_image(im, seg_mask, bbs, scale_percent) 
                 for im, seg_mask, bbs 
                 in zip(ims, seg_masks, bboxes)
                ]
@@ -613,7 +593,7 @@ class DataLoader():
 
         return x
 
-    def load_batch(self, batch_size, split='train'):
+    def load_batch(self, batch_size, resolution_out, split='train'):
 
         # Load from disk
         ims, seg_masks, bboxes = [],[],[]
@@ -622,21 +602,28 @@ class DataLoader():
             im = np.array(im, dtype=np.uint8)
             ims.append(im)
             
-            bbs = utils.get_bbs(self.df_summary, im_id)
+            bbs = utils.get_bboxes(self.df_summary, im_id)
             bboxes.append(bbs)  
             
             seg_masks.append(utils.segmentation_heat_map(im, bbs))
 
         # Data augmentation
-        ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes)
+        ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes, resolution_out)
 
-        # Tensors
+        # Input tensors
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
 
+        # Target tensors
         y_pretrained = self._pretained_targets(ims_aug)
-        y_mask = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)
+        
+        y_segmentation = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)
 
-        #TODO: Bboxes to targets
+        h, w = list(x.shape[-2:])
+        centroid_masks, area_ratios_meshes, side_ratios_meshes = zip(*[utils.bbox_targets(bbs, h, w) for bbs in bboxes_aug])
+        y_centroids = torch.from_numpy(np.stack(centroid_masks, axis=0)).unsqueeze(1)
+        y_areas = torch.from_numpy(np.stack(area_ratios_meshes, axis=0)).unsqueeze(1)
+        y_sides = torch.from_numpy(np.stack(side_ratios_meshes, axis=0)).unsqueeze(1)
 
-        return x, y_pretrained, y_mask, bboxes_aug
+
+        return x, y_pretrained, y_segmentation, y_centroids, y_areas, y_sides
 
