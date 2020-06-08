@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.2
+#       jupytext_version: 1.4.1
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env] *
+#     display_name: Python [conda env:wheat_env]
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -48,7 +48,6 @@ import global_wheat_detection.scripts.preprocessing as pp
 # # Data
 
 # +
-DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
 
 df_summary = pd.read_csv(f'{DATA_PATH}/train.csv')
 
@@ -59,6 +58,44 @@ for _, (im_id, *o, source) in df_summary.iterrows():
 train_ids = list(image_ids.keys())[:-373]
 holdout_ids = list(image_ids.keys())[-373:]
 # -
+
+# # Data Loader
+
+# +
+DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
+
+loader = pp.DataLoader(path=DATA_PATH, seed=123)
+# -
+
+x, y_pretrained, y_segmentation, y_centroids, y_areas, y_sides = loader.load_batch(batch_size=16)
+
+print(x.shape)
+print(y_pretrained.shape)
+print(y_segmentation.shape)
+print(y_centroids.shape)
+print(y_areas.shape)
+print(y_sides.shape)
+
+bbs[0][0]
+
+areas = (np.prod(bbs[0][:,-2:], axis=1)/np.prod(list(x.shape[-2:])))**(1/10)
+areas
+
+width_ratios = bbs[0][:,2]/np.sum(bbs[0][:,-2:], axis=1)
+width_ratios
+
+
+
+# +
+area_r = 0.57344538
+side_r = 0.63636364
+
+bb_preds_to_dims(area_r, side_r, *list(x.shape[-2:]))
+# -
+
+# # Bound box prediction matrix
+
+
 
 # # Data Augmentation
 
@@ -89,7 +126,19 @@ for i in range(4):
     
 # -
 
-loader = pp.DataLoader(path=DATA_PATH, seed=123)
+
+
+
+
+y_mask.shape
+
+y.shape
+
+from torchvision import transforms
+
+t = transforms.ToTensor()
+
+t()
 
 ims_aug, masks_aug, bboxes_aug = loader.load_batch(8)
 
