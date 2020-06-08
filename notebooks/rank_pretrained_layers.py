@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.2
+#       jupytext_version: 1.4.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -72,11 +72,11 @@ fig, ax = plt.subplots(figsize=(10, 10))
 im = ax.imshow(im_np)
 
 for bb in bbs:
-    utils.draw_bb(ax, bb)
+    utils.draw_bboxes(ax, bb)
 # -
 
 fig, ax = plt.subplots(figsize=(10, 10))
-im = ax.imshow(utils.blur_bbs(im_np, bbs))
+im = ax.imshow(utils.blur_bboxes(im_np, bbs))
 
 # # Load pre-trained model
 
@@ -136,4 +136,15 @@ for i in range(10):
     
 np.savez(f'{DATA_PATH}/vgg19_feature_layer_wts.npz', **layer_wts)
 # -
+DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
 layer_wts = np.load(f'{DATA_PATH}/vgg19_feature_layer_wts.npz')
+
+min(layer_wts['wts0']/np.mean(layer_wts['wts0']))
+
+x = torch.rand(2,3,5,5)
+y = torch.tensor([2,10,-1]).view(1,-1,1,1)
+x*y
+
+list(layer_wts.keys())
+
+
