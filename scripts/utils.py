@@ -180,14 +180,16 @@ def get_bboxes(df_summary, image_id):
          image_id (str)
 
     Returns:
-        bbs (list)
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
     """
-    bbs = [[int(x) for x in ast.literal_eval(bb)] 
-          for bb 
-          in df_summary.query(f'''image_id == '{image_id}' ''')['bbox']
-          ]
+    bboxes = [[int(x) for x in ast.literal_eval(bb)] 
+              for bb 
+              in df_summary.query(f'''image_id == '{image_id}' ''')['bbox']
+             ]
 
-    return bbs
+    return np.array(bboxes)
 
 
 def draw_bboxes(ax, bbox, color='r'):
