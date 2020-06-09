@@ -518,8 +518,24 @@ class WheatHeadDetector(nn.Module):
                                            , global_kernel_size=3
                                            , dropout=dropout
                                            )
+        self.pre_trained_feature_aligner = nn.Sequential( nn.AdaptiveAvgPool2d((14, 14))
+                                                , nn.Conv2d(in_channels=self.featureizer.out_channels
+                                                            , out_channels=512
+                                                            , kernel_size=1
+                                                            )
+                                                    )
         self.upsampler = UpsampleUnit(in_channels=self.featureizer.out_channels
                                      , out_channels=1 # Segmentation output
                                      , kernel_size=4
                                      , stride=4
                                      )
+
+
+
+    def forward(self, x):
+        x, (h_pad, w_pad) = self.downsampler(x)
+        f, gfv = self.featureizer(x)
+        
+        y1 = self.pre_trained_feature_aligner(f)
+        y2 = torch.relu(self.upsampler(f))
+        return y1, y2
