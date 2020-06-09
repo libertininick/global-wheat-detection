@@ -355,9 +355,7 @@ def sharpen(im):
 
 
 class DataAugmentor():
-    def __init__(self
-                , seed=None
-                ):
+    def __init__(self, seed=None):
         self.rnd = np.random.RandomState(seed)
 
     def _random_crop_dims(self, h_o, w_o, h, w):
@@ -516,9 +514,8 @@ class DataAugmentor():
 
         return im_puzzles, mask_puzzles, bb_puzzles
 
-    def augment_batch(self, ims, seg_masks, bboxes, resolution_out):
+    def augment_batch(self, ims, seg_masks, bboxes, scale_percent):
 
-        scale_percent = resolution_out/ims[0].shape[-1]
         augs = [self.augment_image(im, seg_mask, bbs, scale_percent) 
                 for im, seg_mask, bbs 
                 in zip(ims, seg_masks, bboxes)
@@ -574,6 +571,57 @@ class DataLoader():
         self.train_ids = list(image_ids.keys())[:-373]
         self.valid_ids = list(image_ids.keys())[-373:]
 
+    def _load_raw(self, batch_size, split):
+        """Load images and bounding boxes from disk
+
+        Args:
+            batch_size (int)
+            split (str): 'train' | 'validation'
+
+        Returns:
+            ims (list): List of numpy images
+            bboxes (list): list of bbox arrays
+        """
+        
+        # Load from disk
+        ims, bboxes = [],[]
+        for im_id in self.rnd.choice(self.train_ids, size=batch_size):
+            im = Image.open(f'''{self.path}/{split}/{im_id}.jpg''')
+            im = np.array(im, dtype=np.uint8)
+            ims.append(im)
+            
+            bboxes.append(utils.get_bboxes(self.df_summary, im_id))
+
+        return ims, bboxes
+
+    def _load_n_augment(self, batch_size, resolution_out, split):
+        """Load a batch of images and augment
+        
+        Args:
+            batch_size (int): Number of images to load
+            resolution_out (int): Number of pixels for H & W
+        
+        Returns:
+            ims_aug (list): List of numpy images
+            masks_aug (list): list of egmentation heat map masks
+            bboxes_aug (list): list of bbox arrays
+        """
+
+         # Load from disk
+        ims, bboxes = self._load_raw(batch_size, split)
+
+        # Build segmentation heat map mask from bounding boxes
+        seg_masks = [utils.segmentation_heat_map(im, bbs) for im, bbs in zip(ims, bboxes)]
+
+        # Data augmentation
+        if resolution_out is not None:
+            scale_percent = resolution_out/max(ims[0].shape)
+        else:
+            scale_percent = 1
+        ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes, scale_percent)
+
+        return ims_aug, masks_aug, bboxes_aug
+
     @torch.no_grad()
     def _pretained_targets(self, ims):
         x = torch.stack([self.normalizer(self.cropper(Image.fromarray(im))) for im in ims], dim=0)
@@ -593,22 +641,9 @@ class DataLoader():
 
         return x
 
-    def load_batch(self, batch_size, resolution_out, split='train'):
-
-        # Load from disk
-        ims, seg_masks, bboxes = [],[],[]
-        for im_id in self.rnd.choice(self.train_ids, size=batch_size):
-            im = Image.open(f'''{self.path}/{split}/{im_id}.jpg''')
-            im = np.array(im, dtype=np.uint8)
-            ims.append(im)
-            
-            bbs = utils.get_bboxes(self.df_summary, im_id)
-            bboxes.append(bbs)  
-            
-            seg_masks.append(utils.segmentation_heat_map(im, bbs))
-
-        # Data augmentation
-        ims_aug, masks_aug, bboxes_aug = self.augmentor.augment_batch(ims, seg_masks, bboxes, resolution_out)
+    def load_batch(self, batch_size, resolution_out=None, split='train'):
+        
+        ims_aug, masks_aug, bboxes_aug = self._load_n_augment(batch_size, resolution_out, split)
 
         # Input tensors
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
@@ -623,7 +658,6 @@ class DataLoader():
         y_centroids = torch.from_numpy(np.stack(centroid_masks, axis=0)).unsqueeze(1)
         y_areas = torch.from_numpy(np.stack(area_ratios_meshes, axis=0)).unsqueeze(1)
         y_sides = torch.from_numpy(np.stack(side_ratios_meshes, axis=0)).unsqueeze(1)
-
 
         return x, y_pretrained, y_segmentation, y_centroids, y_areas, y_sides
 
