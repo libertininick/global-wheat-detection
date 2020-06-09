@@ -45,22 +45,13 @@ import global_wheat_detection.scripts.modules as modules
 import global_wheat_detection.scripts.utils as utils
 # -
 
-down_sampler = modules.DownsampleBlock(in_channels=3, n_downsamples=2)
+m = modules.WheatHeadDetector()
 
-m = modules.DenseDilationNet(in_channels=48
-                             , n_feature_maps=8
-                             , block_size=6
-                             , n_blocks=3
-                             , kernel_sizes=[(3,3)]
-                             , global_kernel_size=3
-                            )
-
-x = torch.randn(4, 3, 512, 512)
+x = torch.randn(1, 3, 512, 512)
 with torch.no_grad():
-    y, p = down_sampler(x)
-    y2, gfv = m(y)
+    y1, y2 = m(x)
 
-y2.shape
+y1.shape
 
 1024*.2
 
