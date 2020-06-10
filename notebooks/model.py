@@ -49,10 +49,8 @@ m = modules.WheatHeadDetector()
 
 x = torch.randn(1, 3, 512, 512)
 with torch.no_grad():
-    y1, y2 = m(x)
+    y1, y2, y3, y4, y5 = m._forward_train(x)
 
 y1.shape
-
-1024*.2
 
 

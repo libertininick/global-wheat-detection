@@ -498,6 +498,50 @@ class DenseDilationNet(nn.Module):
         return f, gfv
 
 
+class PixelScorer(nn.Module):
+    def __init__(self, in_channels, kernel_size, dropout=0):
+        super().__init__()
+         
+        self.d_out = nn.Dropout2d(p=dropout) 
+
+        self.swish = Swish()
+
+        self.bottle_channels = int(np.ceil(in_channels/4)//2*2)
+        self.bottleneck = nn.Conv2d( in_channels=in_channels
+                                   , out_channels=self.bottle_channels
+                                   , kernel_size=1
+                                   , bias=False 
+                                   ) 
+        
+        self.gn = nn.GroupNorm(num_groups=pick_n_groups(self.bottle_channels), num_channels=self.bottle_channels)
+
+        self.scorer = nn.Conv2d( in_channels=self.bottle_channels
+                               , out_channels=1
+                               , kernel_size=kernel_size
+                               , padding=int(kernel_size//2)
+                               , bias=True
+                               )
+        self.sigmoid = nn.Sigmoid()
+
+        self._init_wts()
+
+    def _init_wts(self): 
+        self.bottleneck.weight.data = nn.init.kaiming_normal_(self.bottleneck.weight.data) 
+        self.scorer.weight.data *= (6.0/(self.bottle_channels + 1))**0.5
+        self.scorer.bias.data *= 0.0
+
+    def forward(self, x, beta=1.0):
+        f = self.d_out(x) 
+        f = self.bottleneck(f)
+        f = self.gn(f) 
+        f = self.swish(f, beta) 
+        f = self.d_out(f)
+        f = self.scorer(f)
+        f = self.sigmoid(f)
+        
+        return f
+
+
 class WheatHeadDetector(nn.Module):
     """
     """ 
@@ -510,7 +554,7 @@ class WheatHeadDetector(nn.Module):
         super().__init__() 
 
         self.downsampler = DownsampleBlock(in_channels=3, n_downsamples=2)
-        self.featureizer = DenseDilationNet(in_channels=48
+        self.featurizer = DenseDilationNet(in_channels=48
                                            , n_feature_maps=n_feature_maps
                                            , block_size=block_size
                                            , n_blocks=n_blocks
@@ -519,23 +563,42 @@ class WheatHeadDetector(nn.Module):
                                            , dropout=dropout
                                            )
         self.pre_trained_feature_aligner = nn.Sequential( nn.AdaptiveAvgPool2d((14, 14))
-                                                , nn.Conv2d(in_channels=self.featureizer.out_channels
+                                                , nn.Conv2d(in_channels=self.featurizer.out_channels
                                                             , out_channels=512
                                                             , kernel_size=1
                                                             )
                                                     )
-        self.upsampler = UpsampleUnit(in_channels=self.featureizer.out_channels
+        self.upsampler = UpsampleUnit(in_channels=self.featurizer.out_channels
                                      , out_channels=1 # Segmentation output
                                      , kernel_size=4
                                      , stride=4
                                      )
+        self.bbox_loc_classifier = PixelScorer(in_channels=self.featurizer.out_channels, kernel_size=9)
+        self.bbox_area_reg = PixelScorer(in_channels=self.featurizer.out_channels, kernel_size=9)
+        self.bbox_side_ratio_reg = PixelScorer(in_channels=self.featurizer.out_channels, kernel_size=9)
 
-
-
-    def forward(self, x):
+    def _forward_train(self, x):
         x, (h_pad, w_pad) = self.downsampler(x)
-        f, gfv = self.featureizer(x)
+        f, gfv = self.featurizer(x)
+
+        yh_pretrained = self.pre_trained_feature_aligner(f)
+        yh_segmentation = torch.relu(self.upsampler(f))
+        yh_centroids = self.bbox_loc_classifier(f)
+        yh_areas = self.bbox_area_reg(f)
+        yh_sides = self.bbox_side_ratio_reg(f)
+
+        return yh_pretrained, yh_segmentation, yh_centroids, yh_areas, yh_sides
+
+    @torch.no_grad()
+    def _forward_inference(self, x):
+        x, (h_pad, w_pad) = self.downsampler(x)
+        f, gfv = self.featurizer(x)
+
+        yh_centroids = self.bbox_loc_classifier(f)
+        yh_areas = self.bbox_area_reg(f)
+        yh_sides = self.bbox_side_ratio_reg(f)
+
+        return yh_centroids, yh_areas, yh_sides
         
-        y1 = self.pre_trained_feature_aligner(f)
-        y2 = torch.relu(self.upsampler(f))
-        return y1, y2
+    def forward(self, x):
+        pass 
