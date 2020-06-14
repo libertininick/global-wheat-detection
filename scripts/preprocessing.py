@@ -536,7 +536,8 @@ class DataAugmentor():
 
 
 class DataLoader():
-    def __init__(self, path, seed=None):
+    def __init__(self, path, n_downsamples=2, seed=None):
+        
         self.augmentor = DataAugmentor()
         self.cropper =  transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224)])
         self.normalizer = transforms.Compose([ transforms.ToTensor()
@@ -570,6 +571,9 @@ class DataLoader():
 
         self.train_ids = list(image_ids.keys())[:-373]
         self.valid_ids = list(image_ids.keys())[-373:]
+
+        # Parameters for bounding box targets
+        self.n_downsamples = n_downsamples
 
     def _load_raw(self, batch_size, split):
         """Load images and bounding boxes from disk
@@ -654,10 +658,8 @@ class DataLoader():
         y_segmentation = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)
 
         h, w = list(x.shape[-2:])
-        centroid_masks, area_ratios_meshes, side_ratios_meshes = zip(*[utils.bbox_targets(bbs, h, w) for bbs in bboxes_aug])
-        y_centroids = torch.from_numpy(np.stack(centroid_masks, axis=0)).unsqueeze(1)
-        y_areas = torch.from_numpy(np.stack(area_ratios_meshes, axis=0)).unsqueeze(1)
-        y_sides = torch.from_numpy(np.stack(side_ratios_meshes, axis=0)).unsqueeze(1)
+        targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes_aug]
+        y_bb_targets = torch.from_numpy(np.stack(targets, axis=0))
 
-        return x, y_pretrained, y_segmentation, y_centroids, y_areas, y_sides
+        return x, y_pretrained, y_segmentation, y_bb_targets
 

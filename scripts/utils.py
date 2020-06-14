@@ -6,7 +6,10 @@ import matplotlib.patches as patches
 import numpy as np
 from PIL import Image
 import scipy.sparse
+from scipy.stats import norm
 
+AREA_RATIO = {'scale': 8, 'scaled_mean': 0.52034, 'scaled_std': 0.04300}
+SIDE_RATIO = {'mean': 0.52321, 'std': 0.11799}
 
 def load_sparse_matrix(path):
     sparse_matrix = scipy.sparse.load_npz(path)
@@ -237,9 +240,9 @@ def normalize_bboxes(bboxes, h, w):
     return bbox_norms
 
 
-def bbox_targets(bboxes, h, w, model_downsample=2, area_scale=10):
-    """Builds centroid mask, area ratio regression mesh, and 
-    side ratio regression mesh for a list of bounding boxes
+def bbox_targets(bboxes, h, w, n_downsamples=0):
+    """Builds centroid mask, x & y position regression meshes, area ratio 
+    regression mesh, and side ratio regression mesh for a list of bounding boxes
     
     Args:
         bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
@@ -247,61 +250,76 @@ def bbox_targets(bboxes, h, w, model_downsample=2, area_scale=10):
                           are represented in the format `x, y, w, h`
         h (int): Image height
         w (int): Image width
-        model_downsample (int): Downs
-        area_scale=10
+        model_downsample (int): Number of times input was downsampled as it passes through model
 
     Returns:
-        centroid_mask (ndarray): (h//model_downsample, w//model_downsample)
-        area_ratios_mesh (ndarray): (h//model_downsample, w//model_downsample)
-        side_ratios_mesh (ndarray): (h//model_downsample, w//model_downsample)
+        targets (ndarray): (5, h//2**n_downsamples, w//2**n_downsamples)
+            0: centroid_mask
+            1: x_pos_mesh
+            2: y_pos_mesh
+            3: area_ratios_mesh
+            4: side_ratios_mesh
     """
     # Factor in downsampling of image as it passes through model
-    h_ds, w_ds = h//model_downsample, w//model_downsample
+    h_ds, w_ds = h//2**n_downsamples, w//2**n_downsamples
+    targets = np.zeros((5, h_ds, w_ds), dtype=np.float32)
 
     # Normalize bounding boxes for original height and width of image
     bboxes_norm = normalize_bboxes(bboxes, h, w)
     
-    # Centroid mask for NLLLoss 
-    centroid_mask = np.zeros((h_ds, w_ds), dtype=np.int64)
+    # Centroid indexes
     centroid_idxs = bboxes_norm[:, :2]
     centroid_idxs[:,0] += bboxes_norm[:, 2]/2
     centroid_idxs[:,1] += bboxes_norm[:, 3]/2
     centroid_idxs = np.floor(centroid_idxs*np.array([h_ds, w_ds])).astype(np.uint8)
-    centroid_mask[centroid_idxs[:,0], centroid_idxs[:,1]] = 1
+
+    # Centroid mask for NLLLoss 
+    targets[0, centroid_idxs[:,0], centroid_idxs[:,1]] = 1
+
+    # Position meshes for MSE
+    targets[1, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(bboxes_norm[:, 0])
+    targets[2, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(bboxes_norm[:, 1])
 
     # Area ratios mesh for MSE
-    area_ratios = np.prod(bboxes_norm[:,-2:], axis=1)**(1/area_scale)
-    area_ratios_mesh = np.zeros((h_ds, w_ds), dtype=np.float32)
-    area_ratios_mesh[centroid_idxs[:,0], centroid_idxs[:,1]] = area_ratios
+    area_ratios = np.prod(bboxes_norm[:,-2:], axis=1)
+    area_ratios_norm = (area_ratios**(1/AREA_RATIO['scale']) - AREA_RATIO['scaled_mean'])/AREA_RATIO['scaled_std']
+    targets[3, centroid_idxs[:,0], centroid_idxs[:,1]] = area_ratios_norm
 
     # Side ratios mesh for MSE 
     side_ratios = bboxes_norm[:,2]/np.sum(bboxes_norm[:,-2:], axis=1)
-    side_ratios_mesh = np.zeros((h_ds, w_ds), dtype=np.float32)
-    side_ratios_mesh[centroid_idxs[:,0], centroid_idxs[:,1]] = side_ratios
+    side_ratios_norm = (side_ratios - SIDE_RATIO['mean'])/SIDE_RATIO['std']
+    targets[4, centroid_idxs[:,0], centroid_idxs[:,1]] = side_ratios_norm
 
-    return centroid_mask, area_ratios_mesh, side_ratios_mesh
+    return targets
 
 
-def bbox_pred_to_dims(area_ratio, side_ratio, w, h, area_scale=10):
-    """Converts sigmoid prediction in bbox w, h dims
+def bbox_pred_to_dims(x, y, area_ratio, side_ratio, w, h):
+    """Converts normalized predictions into bbox [x, y, w, h] dims
 
     Args:
-        area_ratio (float): ((bb_w*bb_h)/(im_w*im_h))**(1/area_scale)
-        side_ratio (float): bb_w/(bb_w + bb_h)
+        x (float): Predicted normalized x position
+        y (float): Predicted normalized y position
+        area_ratio (float): 
+        side_ratio (float): 
         w (int): Image width
         h (int): Image height
-        area_scale (int): Root used to scale area ratio
+
 
     Returns:
-        bb_w_pred (int)
-        bb_h_pred (int)
+        bb_pred (list): [x, y, w, h] 
     """
-    area_pred = area_ratio**area_scale*w*h
+    x_pred = int(np.round(norm.cdf(x)*w))
+    y_pred = int(np.round(norm.cdf(y)*h))
+    
+    area_ratio = (area_ratio*AREA_RATIO['scaled_std'] + AREA_RATIO['scaled_mean'])**AREA_RATIO['scale']
+    area_pred = area_ratio*w*h
+    
+    side_ratio = side_ratio*SIDE_RATIO['std'] +  SIDE_RATIO['mean']
     coeff = [1 - side_ratio, 0, -side_ratio*area_pred]
     w_pred = int(np.round(max(np.roots(coeff))))
-    h_pred = int(np.round(area_pred/w_pred))
+    h_pred = int(np.round(area_pred/(w_pred + 1e-6)))
     
-    return w_pred, h_pred
+    return [x_pred, y_pred, w_pred, h_pred]
 #endregion
 
 
