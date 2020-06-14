@@ -71,11 +71,30 @@ for i in range(4):
 
 # ## Load tensors
 
-x, y_pretrained, y_segmentation, y_centroids, y_areas, y_sides = loader.load_batch(batch_size=4)
+x, y_pretrained, y_segmentation, y_bb_targets = loader.load_batch(batch_size=4)
 
 print(x.shape)
 print(y_pretrained.shape)
 print(y_segmentation.shape)
-print(y_centroids.shape)
-print(y_areas.shape)
-print(y_sides.shape)
+print(y_bb_targets.shape)
+
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(y_bb_targets[0,0,:,:], cmap='gray')
+
+# ### Centroid mask
+
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(y_bb_targets[0,0,:,:], cmap='gray')
+
+i, j = np.where(y_bb_targets[0,0,:,:] == 1)
+y_bb_targets[0,4, i, j]
+
+# ### `bbox_pred_to_dims`
+
+y_bb_targets[0,1:,i, j][:,0]
+
+utils.bbox_pred_to_dims(*(y_bb_targets[0,1:,i, j][:,-1]), 256, 256)
+
+utils.bbox_pred_to_dims(*[-4, 4, 4, 0], 1024, 1024)
+
+
