@@ -52,7 +52,7 @@ DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
 loader = DataLoader(path=DATA_PATH, seed=123)
 # -
 
-x, *y = loader.load_batch(batch_size=4, resolution_out=256)
+x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
 
 m = modules.WheatHeadDetector()
 

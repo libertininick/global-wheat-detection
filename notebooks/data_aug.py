@@ -71,7 +71,8 @@ for i in range(4):
 
 # ## Load tensors
 
-x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts = loader.load_batch(batch_size=4, resolution_out=256)
+x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+y_pretrained, y_segmentation, y_bboxes, bbox_class_wts = y
 
 print(x.shape)
 print(y_pretrained.shape, torch.mean(y_pretrained), torch.std(y_pretrained))

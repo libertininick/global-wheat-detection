@@ -673,4 +673,4 @@ class DataLoader():
         y_bboxes = torch.from_numpy(y_bboxes)
         bbox_class_wts = torch.from_numpy(wts)
 
-        return x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts
+        return x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts, bboxes_aug
