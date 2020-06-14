@@ -41,16 +41,23 @@ for part in path_parts[1:]:
     if p not in sys.path:
         sys.path.append(p)
 
+from global_wheat_detection.scripts.preprocessing import DataLoader
 import global_wheat_detection.scripts.modules as modules
 import global_wheat_detection.scripts.utils as utils
+import global_wheat_detection.scripts.training_utils as training_utils
+
+# +
+DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
+
+loader = DataLoader(path=DATA_PATH, seed=123)
 # -
+
+x, *y = loader.load_batch(batch_size=4, resolution_out=256)
 
 m = modules.WheatHeadDetector()
 
-x = torch.randn(1, 3, 512, 512)
-with torch.no_grad():
-    y1, y2, y3, y4, y5 = m._forward_train(x)
+yh = m._forward_train(x)
 
-y1.shape
+training_utils.training_loss(*yh, *y)
 
 
