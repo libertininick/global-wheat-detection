@@ -71,20 +71,22 @@ for i in range(4):
 
 # ## Load tensors
 
-x, y_pretrained, y_segmentation, y_bb_targets = loader.load_batch(batch_size=4)
+x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts = loader.load_batch(batch_size=4, resolution_out=256)
 
 print(x.shape)
-print(y_pretrained.shape)
-print(y_segmentation.shape)
-print(y_bb_targets.shape)
-
-fig, ax = plt.subplots(figsize=(10, 10))
-ax.imshow(y_bb_targets[0,0,:,:], cmap='gray')
+print(y_pretrained.shape, torch.mean(y_pretrained), torch.std(y_pretrained))
+print(y_segmentation.shape, torch.mean(y_segmentation), torch.std(y_segmentation))
+b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
+print(y_bboxes.shape, torch.mean(y_bboxes[b,1:,i,j]), torch.std(y_bboxes[b,1:,i,j]))
+print(bbox_class_wts.shape, torch.sum(bbox_class_wts, dim=(1,2,3)))
 
 # ### Centroid mask
 
 fig, ax = plt.subplots(figsize=(10, 10))
-ax.imshow(y_bb_targets[0,0,:,:], cmap='gray')
+ax.imshow(y_bboxes[0,0,:,:], cmap='gray')
+
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(bbox_class_wts[0,0,:,:], cmap='gray')
 
 i, j = np.where(y_bb_targets[0,0,:,:] == 1)
 y_bb_targets[0,4, i, j]

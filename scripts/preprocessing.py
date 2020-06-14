@@ -653,13 +653,24 @@ class DataLoader():
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
 
         # Target tensors
-        y_pretrained = self._pretained_targets(ims_aug)
+        y_pretrained = self._pretained_targets(ims_aug)*3/2  #3/2x to scale up std
         
-        y_segmentation = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)
+        y_segmentation = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)*3  #3x to scale up std
 
         h, w = list(x.shape[-2:])
         targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes_aug]
-        y_bb_targets = torch.from_numpy(np.stack(targets, axis=0))
+        y_bboxes = np.stack(targets, axis=0)
 
-        return x, y_pretrained, y_segmentation, y_bb_targets
+        # Classification wts
+        centroids = y_bboxes[:, 0, :, :]
+        centroids = np.transpose(centroids, axes=[1,2,0])
+        wts = centroids*25
+        wts += cv2.dilate(centroids,  kernel=np.ones((5,5)))*5
+        wts += np.ones_like(centroids)
+        wts /= np.sum(wts, axis=(0,1))
+        wts = np.transpose(wts, axes=[2,0,1])
 
+        y_bboxes = torch.from_numpy(y_bboxes)
+        bbox_class_wts = torch.from_numpy(wts)
+
+        return x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts
