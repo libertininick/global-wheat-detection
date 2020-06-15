@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 
 from global_wheat_detection.scripts.preprocessing import DataLoader
+import global_wheat_detection.scripts.utils as utils
 
 mse_loss = nn.MSELoss()
 bce_loss = nn.BCEWithLogitsLoss(reduction='none')
@@ -35,6 +36,27 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
     
     return loss
 
+def inference_output(yh_bboxes, w, h, threshold=0.5):
+    yh_bboxes[:,0,:,:] = torch.sigmoid(yh_bboxes[:,0,:,:])
+    yh_bboxes = yh_bboxes.numpy()
+    b, *_ = yh_bboxes.shape
+    
+    bbs = []
+    # [confidence, xmin, ymin, width, height]
+    for im_idx in range(b):
+        i, j = np.where(yh_bboxes[im_idx, 0, :, :] >= threshold)
+        confidences = yh_bboxes[im_idx, 0, i, j]
+        xs = yh_bboxes[im_idx, 1, i, j]
+        ys = yh_bboxes[im_idx, 2, i, j]
+        areas = yh_bboxes[im_idx, 3, i, j]
+        sides = yh_bboxes[im_idx, 4, i, j]
+
+        bbs.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
+                             for (c, x, y, a, s)
+                             in zip(confidences, xs, ys, areas, sides)
+                            ]))
+            
+    return bbs
 
 def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
     """
