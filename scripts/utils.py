@@ -99,7 +99,7 @@ def precision(ious, confidence_levels=None, iou_threshold=0.5):
 
     # Order predictions by confidence (most -> least)
     if confidence_levels is not None: 
-        ious = ious[np.argmax(-np.array(confidence_levels)), :]
+        ious = ious[np.argsort(-np.array(confidence_levels)), :]
         
     object_idxs = np.arange(ious.shape[1], dtype=np.uint8)
     assigned_objects = np.array([], dtype=np.uint8)
