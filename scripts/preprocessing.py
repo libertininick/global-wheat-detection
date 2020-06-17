@@ -640,7 +640,7 @@ class DataLoader():
         wts_key = self.rnd.choice(self.wts_keys, size=1).item(0)
         wts = self.layer_wts[wts_key]
         wts /= np.mean(wts)
-        wts = torch.from_numpy(wts).view(1,-1,1,1)
+        wts = torch.from_numpy(wts).view(1,-1,1,1).type(torch.float32)
         x = x*wts
 
         return x
