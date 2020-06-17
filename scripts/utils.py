@@ -16,6 +16,10 @@ def load_sparse_matrix(path):
     arr = sparse_matrix.todense()
     return arr
 
+def large_n(a, n):
+    "nth largest element of array"
+    top_n_idx = np.argpartition(a, kth=-n)[-n:]
+    return a[top_n_idx[0]]
 
 #region mAP
 def iou(box_a, box_b):
