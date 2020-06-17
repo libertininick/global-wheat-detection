@@ -45,19 +45,39 @@ from global_wheat_detection.scripts.preprocessing import DataLoader
 import global_wheat_detection.scripts.modules as modules
 import global_wheat_detection.scripts.utils as utils
 import global_wheat_detection.scripts.training_utils as training_utils
-
-# +
-DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
-
-loader = DataLoader(path=DATA_PATH, seed=123)
 # -
 
-x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+DATA_PATH = os.path.abspath('../data')
+loader = DataLoader(path=DATA_PATH, seed=123)
 
 m = modules.WheatHeadDetector()
 
-yh = m._forward_train(x)
+x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+x.shape
 
+y[1].dtype
+
+yh = m._forward_train(x)
 training_utils.training_loss(*yh, *y)
+
+yh = m._forward_inference(x)
+bboxes_pred = training_utils.inference_output(yh, *list(x.shape[2:]))
+utils.mAP(bboxes_pred, bboxes_aug)
+
+# # Test training
+
+model = modules.WheatHeadDetector()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+for i in range(10):
+    x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+    yh = model._forward_train(x)
+
+    loss = training_utils.training_loss(*yh, *y)
+    print(loss.item())
+    
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
 
 
