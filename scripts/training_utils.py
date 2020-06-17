@@ -24,15 +24,22 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
     """
 
     loss_pretrained = mse_loss(yh_pretrained, y_pretrained)
+    
     loss_segmentation = mse_loss(yh_segmentation, y_segmentation)
 
     loss_bb_classification = torch.sum(bce_loss(yh_bboxes[:,0,:,:], y_bboxes[:,0,:,:])*bbox_class_wts)
-    loss = loss_pretrained + loss_segmentation + loss_bb_classification
+    
+    loss = ( torch.clamp_max(loss_pretrained, 3) 
+           + torch.clamp_max(loss_segmentation, 3) 
+           + torch.clamp_max(loss_bb_classification,3)
+           )
 
     b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
     if len(i) > 0:
         loss_bb_regressors = mse_loss(yh_bboxes[b, 1:, i, j], y_bboxes[b, 1:, i, j])
-        loss = loss + loss_bb_regressors
+        #TODO: Debug inf
+        print(loss_pretrained.item(), loss_segmentation.item(), loss_bb_classification.item(), loss_bb_regressors.item())
+        loss = loss + torch.clamp_max(loss_bb_regressors,3)
     
     return loss
 
