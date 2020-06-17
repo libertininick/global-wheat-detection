@@ -36,7 +36,7 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
     
     return loss
 
-def inference_output(yh_bboxes, w, h, threshold=0.5):
+def inference_output(yh_bboxes, w, h, threshold=0.5, max_boxes=200):
     yh_bboxes[:,0,:,:] = torch.sigmoid(yh_bboxes[:,0,:,:])
     yh_bboxes = yh_bboxes.numpy()
     b, *_ = yh_bboxes.shape
@@ -44,7 +44,8 @@ def inference_output(yh_bboxes, w, h, threshold=0.5):
     bbs = []
     # [confidence, xmin, ymin, width, height]
     for im_idx in range(b):
-        i, j = np.where(yh_bboxes[im_idx, 0, :, :] >= threshold)
+        t = max(threshold, utils.large_n(yh_bboxes[im_idx, 0, :, :].flatten(), max_boxes))
+        i, j = np.where(yh_bboxes[im_idx, 0, :, :] >= t)
         confidences = yh_bboxes[im_idx, 0, i, j]
         xs = yh_bboxes[im_idx, 1, i, j]
         ys = yh_bboxes[im_idx, 2, i, j]
