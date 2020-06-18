@@ -64,7 +64,7 @@ def crop_box(bboxes, x, y, w, h, alpha=0.2):
 
     bb_x1, bb_y1 = bboxes[:,0], bboxes[:,1]
     bb_w, bb_h = bboxes[:,2], bboxes[:,3]
-    bb_areas = bb_w*bb_h
+    bb_areas = bb_w*bb_h + 1e-6
 
     # Crop
     bb_x4, bb_y4 = np.minimum(bb_x1 + bb_w, x + w), np.minimum(bb_y1 + bb_h, y + h)
