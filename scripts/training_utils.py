@@ -38,7 +38,7 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
     if len(i) > 0:
         loss_bb_regressors = mse_loss(yh_bboxes[b, 1:, i, j], y_bboxes[b, 1:, i, j])
         #TODO: Debug inf
-        print(loss_pretrained.item(), loss_segmentation.item(), loss_bb_classification.item(), loss_bb_regressors.item())
+        print(f'{loss_pretrained.item():.2f}, {loss_segmentation.item():.2f}, {loss_bb_classification.item():.2f}, {loss_bb_regressors.item():.2f}')
         loss = loss + torch.clamp_max(loss_bb_regressors,3)
     
     return loss
@@ -65,6 +65,7 @@ def inference_output(yh_bboxes, w, h, threshold=0.5, max_boxes=200):
                             ]))
             
     return bbs
+
 
 def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
     """
@@ -93,7 +94,14 @@ def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
     return np.append(warmup_scales, lr_scales)
 
 
+
+def train(model, data_path, save_path, n_epochs, n_warmup=5, n_steps_per_epoch=100, seed=123):
+    loader = DataLoader(data_path, seed=seed)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.2)
+
     lr_sales = cyclic_lr_scales(n_epochs, n_warmup)
+
     def lr_lambda(epoch):
         """
         'We use a mini batch size of 64'
@@ -102,3 +110,47 @@ def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
         return lr_sales[epoch]/64
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    rnd = np.random.RandomState(seed=seed)
+
+    res_batch_combos = [(512, 2), (410, 4), (310, 6), (256, 8)]
+
+    losses = []
+    for e_i in range(n_epochs):
+        e_losses = []
+        for s_i in range(n_steps_per_epoch):
+            resolution_out, batch_size = rnd.choice(res_batch_combos)
+
+            x, *y, bboxes_aug = loader.load_batch(batch_size, resolution_out, split='train')
+            yh = model._forward_train(x)
+            loss = training_loss(*yh, *y)
+
+            loss.backward()
+            e_losses.append(loss.item())
+            
+            lr = optimizer.param_groups[0]['lr']
+            optimizer.param_groups[0]['lr'] = lr*batch_size # adj LR for batch size
+            optimizer.step()
+            optimizer.param_groups[0]['lr'] = lr
+
+            optimizer.zero_grad()
+
+        losses.append((np.median(e_losses), np.min(e_losses), np.max(e_losses)))
+        
+        scheduler.step()
+
+        valid_mAP, valid_ct = 0, 0
+        for _ in range(10):
+            resolution_out, batch_size = rnd.choice(res_batch_combos)
+
+            x, *y, bboxes_aug = loader.load_batch(batch_size, resolution_out, split='validation')
+            yh = model._forward_inference(x)
+            bboxes_pred = inference_output(yh, *list(x.shape[2:]))
+            valid_mAP += utils.mAP(bboxes_pred, bboxes_aug)*batch_size
+            valid_ct += batch_size
+
+        #TODO Print progress
+        #TODO Save model if on cyclic reset
+
+        
+
