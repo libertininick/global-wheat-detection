@@ -247,6 +247,7 @@ def normalize_bboxes(bboxes, h, w):
         bboxes (ndarray): (N, 4)
     """
     bbox_norms = np.array(bboxes)/np.array([w, h, w, h])
+    bbox_norms = np.minimum(np.maximum(0.0001, bbox_norms), 0.9999)
     
     return bbox_norms
 
