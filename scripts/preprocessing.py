@@ -589,8 +589,9 @@ class DataLoader():
         
         # Load from disk
         ims, bboxes = [],[]
-        for im_id in self.rnd.choice(self.train_ids, size=batch_size):
-            im = Image.open(f'''{self.path}/{split}/{im_id}.jpg''')
+        im_ids = self.valid_ids if split == 'validation' else self.train_ids
+        for im_id in self.rnd.choice(im_ids, size=batch_size):
+            im = Image.open(f'''{self.path}/train/{im_id}.jpg''')
             im = np.array(im, dtype=np.uint8)
             ims.append(im)
             
