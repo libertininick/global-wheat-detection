@@ -168,10 +168,17 @@ def mAP(y_pred, y_true, iou_thresholds=np.arange(50, 80, 5)/100):
         mean_avg_precision (float)
     """
 
-    avg_precisions = [average_precision(y_p[:,1:], y_t, y_p[:,0], iou_thresholds) 
-                      for y_p, y_t 
-                      in zip(y_pred, y_true)
-                     ]
+    avg_precisions = []
+    for y_p, y_t in zip(y_pred, y_true):
+        ap = 0
+        
+        if len(y_p) > 0 and len(y_t) > 0:
+            ap = average_precision(y_p[:,1:], y_t, y_p[:,0], iou_thresholds)
+        elif len(y_p) == 0 and len(y_t) == 0:
+            ap = 1
+
+        avg_precisions.append(ap)
+    
     mean_avg_precision = np.mean(avg_precisions)
     
     return mean_avg_precision
