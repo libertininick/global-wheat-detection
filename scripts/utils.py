@@ -273,16 +273,17 @@ def bbox_targets(bboxes, h, w, n_downsamples=0):
             4: side_ratios_mesh
     """
     # Factor in downsampling of image as it passes through model
-    h_ds, w_ds = h//2**n_downsamples, w//2**n_downsamples
+    h_ds, w_ds = h//(2**n_downsamples), w//(2**n_downsamples)
     targets = np.zeros((5, h_ds, w_ds), dtype=np.float32)
 
     # Normalize bounding boxes for original height and width of image
     bboxes_norm = normalize_bboxes(bboxes, h, w)
     
     # Centroid indexes
-    centroid_idxs = bboxes_norm[:, :2]
-    centroid_idxs[:,0] += bboxes_norm[:, 2]/2
-    centroid_idxs[:,1] += bboxes_norm[:, 3]/2
+    x_centroid, y_centroid = bboxes_norm[:, 0], bboxes_norm[:, 1]
+    x_centroid += bboxes_norm[:, 2]/2
+    y_centroid += bboxes_norm[:, 3]/2
+    centroid_idxs = np.stack((y_centroid, x_centroid), axis=-1)
     centroid_idxs = np.floor(centroid_idxs*np.array([h_ds, w_ds])).astype(np.uint8)
 
     # Centroid mask for NLLLoss 
