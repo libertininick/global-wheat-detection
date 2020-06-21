@@ -516,12 +516,15 @@ class DataAugmentor():
 
     def augment_batch(self, ims, seg_masks, bboxes, scale_percent):
 
+        # batch size
+        batch_size = len(ims)
+
         augs = [self.augment_image(im, seg_mask, bbs, scale_percent) 
                 for im, seg_mask, bbs 
                 in zip(ims, seg_masks, bboxes)
                ]
 
-        if self.rnd.rand() < 0.5:
+        if self.rnd.rand() < 0.5 and batch_size%4 == 0:
             im_puzzles, mask_puzzles, bb_puzzles = [],[],[]
             for idx in range(0, len(augs), 4):
                 
