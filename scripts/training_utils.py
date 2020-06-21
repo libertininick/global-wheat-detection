@@ -94,7 +94,6 @@ def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
     return np.append(warmup_scales, lr_scales)
 
 
-
 def train(model, data_path, save_path, n_epochs, n_warmup=5, n_steps_per_epoch=100, seed=123):
     loader = DataLoader(data_path, seed=seed)
 

@@ -20,6 +20,7 @@
 # %autoreload 2
 
 import os
+import random
 import sys
 
 import matplotlib.pyplot as plt
@@ -52,7 +53,7 @@ loader = DataLoader(path=DATA_PATH, seed=123)
 
 m = modules.WheatHeadDetector()
 
-x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+x, *y, bboxes_aug = loader.load_batch(batch_size=8, resolution_out=256, split='validation')
 x.shape
 
 y[1].dtype
@@ -67,17 +68,36 @@ utils.mAP(bboxes_pred, bboxes_aug)
 # # Test training
 
 model = modules.WheatHeadDetector()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
 for i in range(10):
-    x, *y, bboxes_aug = loader.load_batch(batch_size=4, resolution_out=256)
+    resolution_out, batch_size = random.choice([(512, 2), (410, 2), (310, 4), (256, 4)])
+    
+    x, *y, bboxes_aug = loader.load_batch(batch_size=batch_size, resolution_out=512)
     yh = model._forward_train(x)
 
     loss = training_utils.training_loss(*yh, *y)
-    print(loss.item())
+    #print(f'{loss.item():.2f}')
     
     loss.backward()
+    
+    lr = optimizer.param_groups[0]['lr']
+    optimizer.param_groups[0]['lr'] = lr*batch_size # adj LR for batch size
     optimizer.step()
+    optimizer.param_groups[0]['lr'] = lr
+    
     optimizer.zero_grad()
+
+x, *y, bboxes_aug = loader.load_batch(batch_size=2, resolution_out=512)
+
+x.shape
+
+yh = model._forward_inference(x)
+bboxes_pred = training_utils.inference_output(yh, *list(x.shape[2:]))
+
+utils.mAP(bboxes_pred, bboxes_aug)
+
+fig, ax = plt.subplots(figsize=(8,8))
+ax.imshow(yh[0, 3, :, :])
 
 
