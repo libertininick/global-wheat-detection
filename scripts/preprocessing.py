@@ -549,19 +549,19 @@ class DataLoader():
                                                                    )
                                             ])
 
-        # Set device
-        self.device = 'cpu'
-        if torch.cuda.is_available():
-            self.device = 'cuda:0'
+        # # Set device
+        # self.device = 'cpu'
+        # if torch.cuda.is_available():
+        #     self.device = 'cuda:0'
 
-        # Load pre-trained VGG
-        vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
-        vgg.eval()
-        modules = list(vgg.features.children())
-        self.feature_model = nn.Sequential(*modules)[:52]
-        self.feature_model.to(self.device) # Move model to GPU
-        self.layer_wts = np.load(f'{path}/vgg19_feature_layer_wts.npz')
-        self.wts_keys = list(self.layer_wts.keys())
+        # # Load pre-trained VGG
+        # vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
+        # vgg.eval()
+        # modules = list(vgg.features.children())
+        # self.feature_model = nn.Sequential(*modules)[:52]
+        # self.feature_model.to(self.device) # Move model to GPU
+        # self.layer_wts = np.load(f'{path}/vgg19_feature_layer_wts.npz')
+        # self.wts_keys = list(self.layer_wts.keys())
         
         self.rnd = np.random.RandomState(seed)
         self.path = path
@@ -611,7 +611,7 @@ class DataLoader():
         
         Returns:
             ims_aug (list): List of numpy images
-            masks_aug (list): list of egmentation heat map masks
+            masks_aug (list): list of segmentation heat map masks
             bboxes_aug (list): list of bbox arrays
         """
 
@@ -655,26 +655,36 @@ class DataLoader():
 
         # Input tensors
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
-
-        # Target tensors
-        y_pretrained = self._pretained_targets(ims_aug)*3/2  #3/2x to scale up std
-        
-        y_segmentation = torch.from_numpy(np.stack(masks_aug, axis=0)).unsqueeze(1)*3  #3x to scale up std
-
         h, w = list(x.shape[-2:])
+        
+        # # Target tensors
+        # y_pretrained = self._pretained_targets(ims_aug)*3/2  #3/2x to scale up std
+        
+        # Number of bounding boxes
+        y_n_bboxes = np.array([len(bboxes) for bboxes in bboxes_aug], dtype=np.float32)
+        
+        # Segmentation
+        h_ds, w_ds = h//(2**self.n_downsamples), w//(2**self.n_downsamples)
+        masks_aug = [cv2.resize(mask, (w_ds, h_ds), interpolation=cv2.INTER_AREA) for mask in masks_aug]
+        y_segmentation = np.stack(masks_aug, axis=0)
+        y_segmentation *= 3  #3x to scale up std
+
+        # Bounding box targets
         targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes_aug]
         y_bboxes = np.stack(targets, axis=0)
 
-        # Classification wts
-        centroids = y_bboxes[:, 0, :, :]
-        centroids = np.transpose(centroids, axes=[1,2,0])
-        wts = centroids*25
-        wts += cv2.dilate(centroids,  kernel=np.ones((5,5)))*5
-        wts += np.ones_like(centroids)
-        wts /= np.sum(wts, axis=(0,1))
-        wts = np.transpose(wts, axes=[2,0,1])
+        # Centroid classification wts
+        wts = y_bboxes[:, 0, :, :].copy()               # Centroids
+        n_seg = np.sum(y_segmentation > 0, axis=(1,2))  # Segmentation area
+        centroid_scale = n_seg/y_n_bboxes               # Num seg pixels/num centroids
+        wts *= centroid_scale[:, None, None]     
+        wts = np.maximum((y_segmentation > 0).astype(np.float32), wts) # Only seg area has non-zero wt
+        wts /= np.sum(wts, axis=(1,2), keepdims=True)
 
+        # To tensors
+        y_n_bboxes = torch.from_numpy(y_n_bboxes).unsqueeze(1)
+        y_segmentation = torch.from_numpy(y_segmentation).unsqueeze(1)
         y_bboxes = torch.from_numpy(y_bboxes)
-        bbox_class_wts = torch.from_numpy(wts)
+        bbox_centroid_wts = torch.from_numpy(wts)
 
-        return x, y_pretrained, y_segmentation, y_bboxes, bbox_class_wts, bboxes_aug
+        return (x, y_n_bboxes, y_segmentation, y_bboxes, bbox_centroid_wts), (ims_aug, bboxes_aug)
