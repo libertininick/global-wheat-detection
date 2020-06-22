@@ -9,11 +9,11 @@ mse_loss = nn.MSELoss()
 bce_loss = nn.BCEWithLogitsLoss(reduction='none')
 
 
-def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
-                 , y_pretrained, y_segmentation, y_bboxes, bbox_class_wts
+def training_loss( yh_n_bboxes, yh_segmentation, yh_bboxes
+                 , y_n_bboxes, y_segmentation, y_bboxes, bbox_class_wts
                  ):
     """ Combined training loss across training objectives
-        (1): Match weights of pretained model
+        (1): Regress on number of bounding boxes
         (2): Regress on segmentation mask
         (3): Bounding box prediction
             (a): Classification of bounding box centroids
@@ -23,15 +23,15 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
             (e): Bounding box side ratios regression
     """
 
-    loss_pretrained = mse_loss(yh_pretrained, y_pretrained)
+    loss_n_bboxes = mse_loss(yh_n_bboxes, y_n_bboxes)
     
     loss_segmentation = mse_loss(yh_segmentation, y_segmentation)
 
     loss_bb_classification = torch.sum(bce_loss(yh_bboxes[:,0,:,:], y_bboxes[:,0,:,:])*bbox_class_wts)
     
-    loss = ( torch.clamp_max(loss_pretrained, 3) 
-           + torch.clamp_max(loss_segmentation, 3) 
-           + torch.clamp_max(loss_bb_classification,3)
+    loss = ( torch.clamp_max(loss_n_bboxes, 5) 
+           + torch.clamp_max(loss_segmentation, 5) 
+           + torch.clamp_max(loss_bb_classification,5)
            )
 
     b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
@@ -39,7 +39,7 @@ def training_loss( yh_pretrained, yh_segmentation, yh_bboxes
         loss_bb_regressors = mse_loss(yh_bboxes[b, 1:, i, j], y_bboxes[b, 1:, i, j])
         #TODO: Debug inf
         print(f'{loss_pretrained.item():.2f}, {loss_segmentation.item():.2f}, {loss_bb_classification.item():.2f}, {loss_bb_regressors.item():.2f}')
-        loss = loss + torch.clamp_max(loss_bb_regressors,3)
+        loss = loss + torch.clamp_max(loss_bb_regressors, 5)
     
     return loss
 
@@ -112,7 +112,7 @@ def train(model, data_path, save_path, n_epochs, n_warmup=5, n_steps_per_epoch=1
 
     rnd = np.random.RandomState(seed=seed)
 
-    res_batch_combos = [(512, 2), (410, 4), (310, 6), (256, 8)]
+    res_batch_combos = [(512, 2), (400, 2), (300, 4), (256, 4)]
 
     losses = []
     for e_i in range(n_epochs):
