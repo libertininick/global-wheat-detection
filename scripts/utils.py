@@ -290,8 +290,8 @@ def bbox_targets(bboxes, h, w, n_downsamples=0):
     targets[0, centroid_idxs[:,0], centroid_idxs[:,1]] = 1
 
     # Position meshes for MSE
-    targets[1, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(bboxes_norm[:, 0])
-    targets[2, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(bboxes_norm[:, 1])
+    targets[1, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(x_centroid)
+    targets[2, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(y_centroid)
 
     # Area ratios mesh for MSE
     area_ratios = np.prod(bboxes_norm[:,-2:], axis=1)
@@ -306,12 +306,12 @@ def bbox_targets(bboxes, h, w, n_downsamples=0):
     return targets
 
 
-def bbox_pred_to_dims(x, y, area_ratio, side_ratio, w, h):
+def bbox_pred_to_dims(x_c, y_c, area_ratio, side_ratio, w, h):
     """Converts normalized predictions into bbox [x, y, w, h] dims
 
     Args:
-        x (float): Predicted normalized x position
-        y (float): Predicted normalized y position
+        x_c (float): Predicted normalized x centroid position
+        y_c (float): Predicted normalized y centroid position
         area_ratio (float): 
         side_ratio (float): 
         w (int): Image width
@@ -321,8 +321,8 @@ def bbox_pred_to_dims(x, y, area_ratio, side_ratio, w, h):
     Returns:
         bb_pred (list): [x, y, w, h] 
     """
-    x_pred = int(np.round(norm.cdf(x)*w))
-    y_pred = int(np.round(norm.cdf(y)*h))
+    x_c = int(np.round(norm.cdf(x_c)*w))
+    y_c = int(np.round(norm.cdf(y_c)*h))
     
     area_ratio = (area_ratio*AREA_RATIO['scaled_std'] + AREA_RATIO['scaled_mean'])**AREA_RATIO['scale']
     area_pred = area_ratio*w*h
@@ -331,6 +331,9 @@ def bbox_pred_to_dims(x, y, area_ratio, side_ratio, w, h):
     coeff = [1 - side_ratio, 0, -side_ratio*area_pred]
     w_pred = int(np.round(max(np.roots(coeff))))
     h_pred = int(np.round(area_pred/(w_pred + 1e-6)))
+
+    x_pred = int(np.round(x_c - w_pred/2))
+    y_pred = int(np.round(y_c - h_pred/2))
     
     return [x_pred, y_pred, w_pred, h_pred]
 #endregion
