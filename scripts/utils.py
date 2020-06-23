@@ -252,6 +252,28 @@ def normalize_bboxes(bboxes, h, w):
     return bbox_norms
 
 
+def bbox_segmentation_mask(bboxes, h, w):
+    """Converts instance bounding boxes in an image to a single segmentation mask
+
+    Args:
+        bboxes (ndarray): Numpy array containing bounding boxes of shape `N X 4` 
+                          where N is the number of bounding boxes and the boxes 
+                          are represented in the format `x, y, w, h`
+        h (int): Image height
+        w (int): Image width
+    """
+
+    # Initialize mask with all 0s
+    mask = np.zeros((h,w), dtype=np.float32)
+    
+    for bb in bboxes:
+        # Fill in portion of mask associated with bb segment
+        x, y, w, h = bb
+        mask[y:y+h, x:x+w] = 1
+
+    return mask
+
+
 def bbox_targets(bboxes, h, w, n_downsamples=0):
     """Builds centroid mask, x & y position regression meshes, area ratio 
     regression mesh, and side ratio regression mesh for a list of bounding boxes
