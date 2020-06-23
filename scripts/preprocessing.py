@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -123,7 +125,6 @@ def resize_bboxes(bboxes, h_o, w_o, h, w):
     bbox_scaled = np.round(bbox_norms*np.array([w, h, w, h]))
     
     return bbox_scaled
-
 #endregion
 
 
@@ -583,7 +584,7 @@ class DataLoader():
 
         Args:
             batch_size (int)
-            split (str): 'train' | 'validation'
+            split (str): 'train' | 'validation' | 'test'
 
         Returns:
             ims (list): List of numpy images
@@ -592,13 +593,22 @@ class DataLoader():
         
         # Load from disk
         ims, bboxes = [],[]
-        im_ids = self.valid_ids if split == 'validation' else self.train_ids
-        for im_id in self.rnd.choice(im_ids, size=batch_size):
-            im = Image.open(f'''{self.path}/train/{im_id}.jpg''')
+        if split == 'test':
+            path, _, files = next(os.walk(f'{self.path}/train'))
+        else:
+            path = f'{self.path}/train'
+            if split == 'validation':
+                files = [f'{im_id}.jpg' for im_id in self.valid_ids]
+            else:
+                files = [f'{im_id}.jpg' for im_id in self.train_ids]
+
+        for f in self.rnd.choice(files, size=batch_size):
+            im = Image.open(f'{path}/{f}')
             im = np.array(im, dtype=np.uint8)
             ims.append(im)
             
-            bboxes.append(utils.get_bboxes(self.df_summary, im_id))
+            if split != 'test':
+                bboxes.append(utils.get_bboxes(self.df_summary, f.replace('.jpg', '')))
 
         return ims, bboxes
 
@@ -608,6 +618,7 @@ class DataLoader():
         Args:
             batch_size (int): Number of images to load
             resolution_out (int): Number of pixels for H & W
+             split (str): 'train' | 'validation' | 'test'
         
         Returns:
             ims_aug (list): List of numpy images
@@ -615,11 +626,12 @@ class DataLoader():
             bboxes_aug (list): list of bbox arrays
         """
 
-         # Load from disk
+        # Load from disk
         ims, bboxes = self._load_raw(batch_size, split)
+        h, w, _ = ims[0].shape
 
-        # Build segmentation heat map mask from bounding boxes
-        seg_masks = [utils.segmentation_heat_map(im, bbs) for im, bbs in zip(ims, bboxes)]
+        # Build bounding box segmentation mask
+        seg_masks = [utils.bbox_segmentation_mask(bbs, h, w) for bbs in bboxes]
 
         # Data augmentation
         if resolution_out is not None:
@@ -650,41 +662,70 @@ class DataLoader():
         return x
 
     def load_batch(self, batch_size, resolution_out=None, split='train'):
+        """
+
+        Args:
+            batch_size (int): Number of images to load
+            resolution_out (int): Resolution to scale to. 
+                                  If `None` resolution will be same as loaded images.
+            split (str): 'train' | 'validation' | 'test'
+
+        Returns:
+            x (tensor): Normalized input images [b, c, h, w]
+            y_n_bboxes (tensor): Number of bounding boxes per image [b, 1]
+            y_seg (tensor): Bounding box segmentation mask [b, 1, h, w]
+            y_bboxes (tensor): Bounding box targets [b, 5, h, w]
+            centroid_wts (tensor): Classification weights for centroids [b, 1, h, w]
+            ims (ndarray): Numpy images
+            bboxes (ndarray): Ground truth bounding boxes
+        """
         
-        ims_aug, masks_aug, bboxes_aug = self._load_n_augment(batch_size, resolution_out, split)
+        if split != 'test':
+            ims, seg_masks, bboxes = self._load_n_augment(batch_size, resolution_out, split)
+        else:
+            ims, bboxes = self._load_raw(batch_size, split)
 
         # Input tensors
-        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims_aug], dim=0)
+        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         h, w = list(x.shape[-2:])
         
         # # Target tensors
         # y_pretrained = self._pretained_targets(ims_aug)*3/2  #3/2x to scale up std
         
-        # Number of bounding boxes
-        y_n_bboxes = np.array([len(bboxes) for bboxes in bboxes_aug], dtype=np.float32)
-        
-        # Segmentation
-        h_ds, w_ds = h//(2**self.n_downsamples), w//(2**self.n_downsamples)
-        masks_aug = [cv2.resize(mask, (w_ds, h_ds), interpolation=cv2.INTER_AREA) for mask in masks_aug]
-        y_segmentation = np.stack(masks_aug, axis=0)
-        y_segmentation *= 3  #3x to scale up std
+        if split != 'test':
+            # Number of bounding boxes
+            y_n_bboxes = np.array([len(bbs)**0.75 for bbs in bboxes], dtype=np.float32)
+            y_n_bboxes = (y_n_bboxes - 16.65)/6.07  # Normalize based on training image stats
+            
+            # Segmentation
+            h_ds, w_ds = h//(2**self.n_downsamples), w//(2**self.n_downsamples)
+            seg_masks = [cv2.resize(mask, (w_ds, h_ds), interpolation=cv2.INTER_AREA) for mask in seg_masks]
+            y_seg = np.stack(seg_masks, axis=0)
+            y_seg[y_seg > 0] = 1.0
+            y_seg[y_seg != 1] = 0.0
 
-        # Bounding box targets
-        targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes_aug]
-        y_bboxes = np.stack(targets, axis=0)
+            # Bounding box targets
+            targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes]
+            y_bboxes = np.stack(targets, axis=0)
 
-        # Centroid classification wts
-        wts = y_bboxes[:, 0, :, :].copy()               # Centroids
-        n_seg = np.sum(y_segmentation > 0, axis=(1,2))  # Segmentation area
-        centroid_scale = n_seg/y_n_bboxes               # Num seg pixels/num centroids
-        wts *= centroid_scale[:, None, None]     
-        wts = np.maximum((y_segmentation > 0).astype(np.float32), wts) # Only seg area has non-zero wt
-        wts /= np.sum(wts, axis=(1,2), keepdims=True)
+            # Centroid classification wts
+            centroid_wts = y_bboxes[:, 0, :, :].copy()        # Centroids
+            n_seg = np.sum(y_seg, axis=(1,2))                 # Segmentation area
+            centroid_scale = n_seg/(y_n_bboxes + 1)           # Num seg pixels/num centroids
+            centroid_wts *= centroid_scale[:, None, None]    
+            centroid_wts = np.maximum(y_seg, centroid_wts)    # Only seg area has non-zero wt
+            denom_norm = np.sum(centroid_wts, axis=(1,2), keepdims=True)
+            centroid_wts[(denom_norm == 0).squeeze()] = 1.0   # Weight all pixels equally if no bbs
+            centroid_wts /= np.sum(centroid_wts, axis=(1,2), keepdims=True)
 
-        # To tensors
-        y_n_bboxes = torch.from_numpy(y_n_bboxes).unsqueeze(1)
-        y_segmentation = torch.from_numpy(y_segmentation).unsqueeze(1)
-        y_bboxes = torch.from_numpy(y_bboxes)
-        bbox_centroid_wts = torch.from_numpy(wts)
+            # To tensors
+            y_n_bboxes = torch.from_numpy(y_n_bboxes).unsqueeze(1)
+            y_seg = torch.from_numpy(y_seg).unsqueeze(1)
+            y_bboxes = torch.from_numpy(y_bboxes)
+            centroid_wts = torch.from_numpy(centroid_wts)
 
-        return (x, y_n_bboxes, y_segmentation, y_bboxes, bbox_centroid_wts), (ims_aug, bboxes_aug)
+            y = (y_n_bboxes, y_seg, y_bboxes, centroid_wts)
+        else:
+            y = None
+
+        return x, y, (ims, bboxes)
