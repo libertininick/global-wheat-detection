@@ -553,6 +553,7 @@ class WheatHeadDetector(nn.Module):
         super().__init__() 
 
         self.downsampler = DownsampleBlock(in_channels=3, n_downsamples=2)
+        
         self.featurizer = DenseDilationNet(in_channels=48
                                            , n_feature_maps=n_feature_maps
                                            , block_size=block_size
@@ -561,11 +562,27 @@ class WheatHeadDetector(nn.Module):
                                            , global_kernel_size=3
                                            , dropout=dropout
                                            )
-        self.num_bboxes_regressor = nn.Linear(self.featurizer.n_global_features, out_features=1)
-        self.num_bboxes_regressor.weight.data = nn.init.normal_(self.num_bboxes_regressor.weight.data, 0, 1/(self.featurizer.n_global_features**0.5)) 
-        self.num_bboxes_regressor.bias.data = nn.init.zeros_(self.num_bboxes_regressor.bias.data)
+        
+        self.num_bboxes_regressor = nn.Sequential(
+              nn.Linear(self.featurizer.n_global_features, out_features=int(self.featurizer.n_global_features//2))
+            , nn.ReLU()
+            , nn.Linear(int(self.featurizer.n_global_features//2), out_features=1)
+        )
+        
+        self.bbox_spread_regressor = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=1, kernel_size=9)
+        self.adaptive_pool = nn.AdaptiveMaxPool2d(output_size=(8,8))
+        
         self.segmentation_scorer = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=1, kernel_size=9)
-        self.bbox_scorer = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=5, kernel_size=9)
+        
+        self.bbox_scorer = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=2, kernel_size=9)
+
+        self._init_wts()
+
+    def _init_wts(self):
+        for m in self.num_bboxes_regressor:
+            if isinstance(m, nn.Linear):
+                m.weight = nn.init.normal_(m.weight, mean=0, std=(2/m.in_features)**0.5)
+                m.bias = nn.init.constant_(m.bias, 0)
 
     def _featurize(self, x):
         x, (h_pad, w_pad) = self.downsampler(x)
@@ -575,20 +592,21 @@ class WheatHeadDetector(nn.Module):
 
     def _forward_train(self, x):
         f, gfv = self. _featurize(x)
+        
         yh_n_bboxes = self.num_bboxes_regressor(gfv)
+        
+        yh_bbox_spread = self.bbox_spread_regressor(f)
+        yh_bbox_spread = self.adaptive_pool(yh_bbox_spread)
+        
         yh_seg = self.segmentation_scorer(f)
+        
         yh_bboxes = self.bbox_scorer(f)
 
-        return yh_n_bboxes, yh_seg, yh_bboxes
+        return yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
 
     @torch.no_grad()
     def _forward_inference(self, x):
-        f, gfv = self. _featurize(x)
-        yh_n_bboxes = torch.relu(self.num_bboxes_regressor(gfv))
-        yh_seg = torch.relu(self.segmentation_scorer(f))
-        yh_bboxes = self.bbox_scorer(f)
-
-        return yh_n_bboxes, yh_seg, yh_bboxes
+        return self._forward_train(x)
         
     def forward(self, x):
         pass 
