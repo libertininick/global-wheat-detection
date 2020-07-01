@@ -1,4 +1,6 @@
+import cv2
 import numpy as np
+from sklearn.cluster import KMeans
 import torch
 import torch.nn as nn
 
@@ -7,57 +9,111 @@ import global_wheat_detection.scripts.utils as utils
 
 mse_loss = nn.MSELoss()
 bce_loss = nn.BCEWithLogitsLoss(reduction='none')
+kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
+log_softmax = torch.nn.LogSoftmax(dim=-1)
+softmax = torch.nn.Softmax(dim=-1)
 
-
-def training_loss( yh_n_bboxes, yh_segmentation, yh_bboxes
-                 , y_n_bboxes, y_segmentation, y_bboxes, bbox_class_wts
+def training_loss( yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
+                 , y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts
                  ):
     """ Combined training loss across training objectives
-        (1): Regress on number of bounding boxes
-        (2): Regress on segmentation mask
-        (3): Bounding box prediction
-            (a): Classification of bounding box centroids
-            (b): Centroid x positions regression
-            (c): Centroid y positions regression
-            (d): Bound box area ratios regression
-            (e): Bounding box side ratios regression
+
+        (1): Regress on number of bounding boxes with MSE loss
+        (2): KL Divergence of bounding box spread
+        (3): Bounding box segmentation mask classification BCE loss
+        (4): Bounding box prediction
+            (a): Bound box area ratios regression with MSE loss
+            (b): Bounding box side ratios regression with MSE loss
+
+    Args:
+        yh_n_bboxes (tensor):    Predicted - Number of bounding boxes per image [b, 1]
+        yh_bbox_spread (tensor): Predicted - Log-probability spread of bounding boxes count over 8x8 grid [b, 1, 8, 8]
+        yh_seg (tensor):         Predicted - Bounding box segmentation mask [b, 1, h_ds, w_ds]
+        yh_bboxes (tensor):      Predicted - Bounding box area/shape targets [b, 2, h_ds, w_ds]
+        y_n_bboxes (tensor):     Target - Number of bounding boxes per image [b, 1]
+        y_bbox_spread (tensor):  Target - Probability spread of bounding boxes count over 8x8 grid [b, 1, 8, 8]
+        y_seg (tensor):          Tagret - Bounding box segmentation mask [b, 1, h_ds, w_ds]
+        y_bboxes (tensor):       Target - Bounding box area/shape targets [b, 3, h_ds, w_ds]
+        seg_wts (tensor):        Weights for segmentation loss based on distance from bbox centroids [b, 1, h_ds, w_ds]
     """
 
     loss_n_bboxes = mse_loss(yh_n_bboxes, y_n_bboxes)
-    
-    loss_segmentation = mse_loss(yh_segmentation, y_segmentation)
 
-    loss_bb_classification = torch.sum(bce_loss(yh_bboxes[:,0,:,:], y_bboxes[:,0,:,:])*bbox_class_wts)
+    b, c, h, w = list(yh_bbox_spread.shape)
+    yh_bbox_spread = log_softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
+    loss_bbox_spread = kl_loss(yh_bbox_spread, y_bbox_spread)
     
-    loss = ( torch.clamp_max(loss_n_bboxes, 5) 
-           + torch.clamp_max(loss_segmentation, 5) 
-           + torch.clamp_max(loss_bb_classification,5)
-           )
-
+    loss_segmentation = torch.sum(bce_loss(yh_seg, y_seg)*seg_wts)
+    
     b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
+    loss_bb_regressors, denom = 0, 3
     if len(i) > 0:
-        loss_bb_regressors = mse_loss(yh_bboxes[b, 1:, i, j], y_bboxes[b, 1:, i, j])
-        #TODO: Debug inf
-        print(f'{loss_pretrained.item():.2f}, {loss_segmentation.item():.2f}, {loss_bb_classification.item():.2f}, {loss_bb_regressors.item():.2f}')
-        loss = loss + torch.clamp_max(loss_bb_regressors, 5)
+        loss_bb_regressors = mse_loss(yh_bboxes[b, :, i, j], y_bboxes[b, 1:, i, j])
+        denom = 4
     
-    return loss
+    loss = (loss_n_bboxes + loss_bbox_spread + loss_segmentation + loss_bb_regressors)/denom
 
-def inference_output(yh_bboxes, w, h, threshold=0.5, max_boxes=200):
-    yh_bboxes[:,0,:,:] = torch.sigmoid(yh_bboxes[:,0,:,:])
+    return torch.clamp_max(loss, 6)
+
+
+def cluster_centroids(yh_seg, n_bboxes, threshold=0.5, kernel=np.ones((5,5), np.uint8), n_init=10):
+
+    # Threshold segmentation predictions
+    yh = (yh_seg >= threshold).astype(np.uint8)
+
+    # Morphological smoothing on threshold predictions
+    yh_smooth = cv2.morphologyEx(yh, cv2.MORPH_OPEN, kernel)
+    yh_smooth = cv2.morphologyEx(yh_smooth, cv2.MORPH_CLOSE, kernel)
+
+    # Positional extraction 
+    i,j = np.where(yh_smooth == 1)
+    yh_pos = np.stack((i,j), axis=-1)
+
+    # Clustering on positional data
+    kmeans = KMeans(n_clusters=n_bboxes, n_init=n_init, random_state=0).fit(yh_pos)
+    
+    # Extract centroids
+    yh_centroids = np.round(kmeans.cluster_centers_).astype(np.int64)
+    
+    return yh_centroids
+
+
+def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
+    
+    # Number of predicted bounding boxes
+    n_bboxes = np.round((yh_n_bboxes.numpy().squeeze()*6.07 + 16.65)**(1.33), 0).astype(np.uint16)
+    
+    # # Bounding box spread
+    # b, c, h, w = list(yh_bbox_spread.shape)
+    # yh_bbox_spread = softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
+
+    # Segmentation mask
+    yh_seg = torch.sigmoid(yh_seg[:,0,:,:])
+    yh_seg = yh_seg.numpy()
+    b, h_ds, w_ds = yh_seg.shape  # Output shape
+
     yh_bboxes = yh_bboxes.numpy()
-    b, *_ = yh_bboxes.shape
     
     bbs = []
     # [confidence, xmin, ymin, width, height]
     for im_idx in range(b):
-        t = max(threshold, utils.large_n(yh_bboxes[im_idx, 0, :, :].flatten(), max_boxes))
-        i, j = np.where(yh_bboxes[im_idx, 0, :, :] >= t)
-        confidences = yh_bboxes[im_idx, 0, i, j]
-        xs = yh_bboxes[im_idx, 1, i, j]
-        ys = yh_bboxes[im_idx, 2, i, j]
-        areas = yh_bboxes[im_idx, 3, i, j]
-        sides = yh_bboxes[im_idx, 4, i, j]
+        n_bbs = n_bboxes[im_idx]
+
+        # Bounding box centroids
+        centroids = cluster_centroids(yh_seg[im_idx], n_bbs)
+        i,j = centroids[:, 0], centroids[:, 1]
+
+        # Confidence
+        confidences = yh_seg[im_idx][i,j]
+
+        # Normalize centroids
+        centroids_norm = centroids/np.array([h_ds, w_ds])
+        xs = centroids_norm[:, 1]
+        ys = centroids_norm[:, 0]
+
+        # Area and side predictions @ centroids
+        areas = yh_bboxes[im_idx, 0, i, j]
+        sides = yh_bboxes[im_idx, 1, i, j]
 
         bbs.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
                              for (c, x, y, a, s)

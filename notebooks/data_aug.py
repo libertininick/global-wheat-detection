@@ -19,6 +19,7 @@
 # %load_ext autoreload
 # %autoreload 2
 
+import itertools
 import os
 import sys
 
@@ -29,6 +30,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import scipy.sparse
+from sklearn.cluster import KMeans
 import torch
 import torchvision
 
@@ -53,44 +55,35 @@ DATA_PATH = 'C:/Users/liber/Dropbox/Python_Code/global_wheat_detection/data'
 loader = pp.DataLoader(path=DATA_PATH, seed=123)
 # -
 
-# ## Visualize Augmentations
-
-# +
-ims_aug, masks_aug, bboxes_aug = loader._load_n_augment(batch_size=4, resolution_out=512, split='train')
-
-fig, axs = plt.subplots(figsize=(20, 40), nrows=4, ncols=2)
-
-for i in range(4):
-    _ = axs[i][0].imshow(ims_aug[i])
-    
-    for bb in bboxes_aug[i]:
-        utils.draw_bboxes(axs[i][0], bb)
-    
-    _ = axs[i][1].imshow(masks_aug[i], cmap='gray', vmin=0)
-# -
-
 # ## Load tensors
 
 # +
-batch_size=8
-resolution_out=256
+batch_size=4
+resolution_out=512
 
-(x, *y), (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out)
-y_n_bboxes, y_segmentation, y_bboxes, bbox_class_wts = y
-# -
+x, y, (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
 
+if y is not None:
+    y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
+
+# +
 print(x.shape)
+
 print(y_n_bboxes.shape, torch.mean(y_n_bboxes), torch.std(y_n_bboxes))
-print(y_segmentation.shape, torch.mean(y_segmentation), torch.std(y_segmentation))
-print(torch.sum(y_segmentation > 0, dim=(1,2,3))/y_n_bboxes.squeeze())
+print(y_bbox_spread.shape, torch.sum(y_bbox_spread, dim=(-2,-1)).squeeze())
+
+print(y_seg.shape, torch.mean(y_seg))
+
 b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
 print(y_bboxes.shape, torch.mean(y_bboxes[b,1:,i,j]), torch.std(y_bboxes[b,1:,i,j]))
-print(bbox_class_wts.shape, torch.sum(bbox_class_wts, dim=(1,2)))
+
+
+# -
 
 # ### Visualize Augmentations
 
 # +
-fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
+fig, axs = plt.subplots(figsize=(20, 7*batch_size), nrows=batch_size, ncols=3)
 
 for i in range(batch_size):
     _ = axs[i][0].imshow(ims_aug[i])
@@ -98,51 +91,119 @@ for i in range(batch_size):
     for bb in bboxes_aug[i]:
         utils.draw_bboxes(axs[i][0], bb)
     
-    _ = axs[i][1].imshow(y_segmentation[i][0], cmap='gray', vmin=0)
+    _ = axs[i][1].imshow(y_seg[i][0], cmap='gray', vmin=0)
+    
+    _ = axs[i][2].imshow(seg_wts[i], cmap='gray', vmin=0)
 # -
 
-# ### Centroid mask
+# ### Bounding box spread
 
-# +
 fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
-
 for i in range(batch_size):
     _ = axs[i][0].imshow(ims_aug[i])
     
     for bb in bboxes_aug[i]:
         utils.draw_bboxes(axs[i][0], bb)
     
-    _ = axs[i][1].imshow(y_bboxes[i][0], cmap='gray', vmin=0, vmax=1)
-# -
+    _ = axs[i][1].imshow(y_bbox_spread[i][0], cmap='gray', vmin=0)
 
-# ### Centroid classification wts
+# # Clustering
 
 # +
-fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
+h, w = 256, 256
+n_bboxes = 40
+centroid_idxs = np.random.randint(low=0, high=h, size=(n_bboxes,2))
 
-for i in range(batch_size):
-    _ = axs[i][0].imshow(y_bboxes[i][0], cmap='gray', vmin=0, vmax=1)
-    _ = axs[i][1].imshow(bbox_class_wts[i]**0.1, cmap='gray')
+idxs = itertools.product(np.arange(h), np.arange(w))
+idxs = np.array(list(idxs))
+
+yh = scipy.spatial.distance_matrix(idxs, centroid_idxs)
+yh = np.min(yh, axis=1)
+yh = (np.argsort(np.argsort(-yh)))**0.5
+yh = yh.reshape(h,w)/np.max(yh)
+yh += (np.random.rand(h,w)-0.5)
+yh = np.minimum(np.maximum(0, yh),1)
+
+# +
+kernel = np.ones((5,5), np.uint8)
+yh_smooth = cv2.morphologyEx((yh > 0.5).astype(np.uint8), cv2.MORPH_OPEN, kernel)
+yh_smooth = cv2.morphologyEx(yh_smooth, cv2.MORPH_CLOSE, kernel)
+
+i,j = np.where(yh_smooth == 1)
+yh_pos = np.stack((i,j), axis=-1)
+
+connectivity = 4
+num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(yh_smooth, connectivity, cv2.CV_32S)
+
+label_scale = (np.max(yh_pos) - np.min(yh_pos))/(np.max(labels) - np.min(labels))
+cc = labels[i,j]*label_scale
+yh_clustering = np.hstack((yh_pos, cc[:,None]))
 # -
 
-# ### `bbox_pred_to_dims`
+kmeans = KMeans(n_clusters=n_bboxes, n_init=20, random_state=0).fit(yh_clustering[:,:2])
+yh_centroids = np.round(kmeans.cluster_centers_[:,:2]).astype(np.int64)
+
+# +
+fig, axs = plt.subplots(figsize=(15,7), ncols=2)
+_ = axs[0].imshow(yh, cmap='gray', vmin=0, vmax=1)
+_ = axs[1].imshow(yh_smooth, cmap='gray', vmin=0, vmax=1)
+
+for y,x in centroid_idxs:
+    rect = patches.Rectangle((x,y), 5, 5, edgecolor='black', facecolor='yellow')
+    axs[0].add_patch(rect)
+    rect = patches.Rectangle((x,y), 5, 5, edgecolor='black', facecolor='yellow')
+    axs[1].add_patch(rect)
+    
+for y,x in yh_centroids:
+    rect = patches.Rectangle((x,y), 5, 5, edgecolor='red', facecolor='red', alpha=0.5)
+    axs[1].add_patch(rect)
+# -
+
+# # `bbox_pred_to_dims`
+
+# +
+batch_size=2
+resolution_out=512
+
+x, y, (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
+
+if y is not None:
+    y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
+# -
+
+y_bboxes[0,1,:,:]
+
+import global_wheat_detection.scripts.training_utils as training_utils
+
+training_utils.inference_output(y_n_bboxes, y_bbox_spread, y_seg, y_bboxes[:,1:,:,:], 512, 512)
 
 for b in range(batch_size):
-    bb_true = bboxes_aug[b][np.argsort(bboxes_aug[b][:,0])].astype(np.int64)
+    bboxes_true = pd.DataFrame(bboxes_aug[b]).sort_values(by=[0,1,2,3]).values
     
-    # Predicted bbs
     i,j = np.where(y_bboxes[b,0,:,:] == 1)
     bboxes_pred = [utils.bbox_pred_to_dims(*bbox, resolution_out, resolution_out) 
                    for bbox 
                    in y_bboxes[b,1:,i, j].T
                   ]
-    bboxes_pred = np.array(bboxes_pred)
-    bboxes_pred = bboxes_pred[np.argsort(bboxes_pred[:,0])]
+    bboxes_pred = pd.DataFrame(bboxes_pred).sort_values(by=[0,1,2,3]).values
     
-    print(b, 'Avg Percision:', utils.average_precision(bboxes_pred, bb_true))
-    for idx in range(bboxes_pred.shape[0]):
-        print(f'{idx:>3}', bb_true[idx], bboxes_pred[idx])
-        
-    print()
+    if bboxes_true.shape == bboxes_pred.shape:
+        bb_match = np.allclose(bboxes_true, bboxes_pred, rtol=1/64, atol=1)
+
+        ap = utils.average_precision(bboxes_pred, bboxes_true)
+
+        if bb_match and np.allclose(ap, 1.0):
+            print(b, bb_match, True)
+        else:
+            if np.allclose(ap, 1.0):
+                print(b, bb_match, True)
+            else:
+
+                for i in range(len(bboxes_true)):
+                    if not np.allclose(bboxes_true[i], bboxes_pred[i], rtol=1/64, atol=1):
+                        print(f'{b}  {i:>3} {bboxes_true[i]} {bboxes_pred[i]}')
+    else:
+        print(b, bboxes_true.shape, bboxes_pred.shape)
+        print(np.setdiff1d(bboxes_true,  bboxes_pred))
 
 
