@@ -1,9 +1,11 @@
+import itertools
 import os
 
 import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
+import scipy
 import torch
 import torch.nn as nn
 from torchvision import transforms
@@ -579,6 +581,9 @@ class DataLoader():
         # Parameters for bounding box targets
         self.n_downsamples = n_downsamples
 
+        # Adaptive bounding box spread
+        self.adaptive_pool = nn.AdaptiveAvgPool2d(output_size=(8,8))
+
     def _load_raw(self, batch_size, split):
         """Load images and bounding boxes from disk
 
@@ -618,7 +623,7 @@ class DataLoader():
         Args:
             batch_size (int): Number of images to load
             resolution_out (int): Number of pixels for H & W
-             split (str): 'train' | 'validation' | 'test'
+            split (str): 'train' | 'validation' | 'test'
         
         Returns:
             ims_aug (list): List of numpy images
@@ -630,9 +635,9 @@ class DataLoader():
         ims, bboxes = self._load_raw(batch_size, split)
         h, w, _ = ims[0].shape
 
-        # Build bounding box segmentation mask
+        # Build bounding box segmentation masks
         seg_masks = [utils.bbox_segmentation_mask(bbs, h, w) for bbs in bboxes]
-
+        
         # Data augmentation
         if resolution_out is not None:
             scale_percent = resolution_out/max(ims[0].shape)
@@ -673,9 +678,10 @@ class DataLoader():
         Returns:
             x (tensor): Normalized input images [b, c, h, w]
             y_n_bboxes (tensor): Number of bounding boxes per image [b, 1]
-            y_seg (tensor): Bounding box segmentation mask [b, 1, h, w]
-            y_bboxes (tensor): Bounding box targets [b, 5, h, w]
-            centroid_wts (tensor): Classification weights for centroids [b, 1, h, w]
+            y_bbox_spread (tensor): Probability spread of bounding boxes count over 8x8 grid [b, 1, 8, 8]
+            y_seg (tensor): Bounding box segmentation mask [b, 1, h_ds, w_ds]
+            y_bboxes (tensor): Bounding box area/shape targets [b, 3, h_ds, w_ds]
+            seg_wts (tensor): Weights for segmentation loss based on distance from bbox centroids [b, 1, h_ds, w_ds]
             ims (ndarray): Numpy images
             bboxes (ndarray): Ground truth bounding boxes
         """
@@ -689,14 +695,12 @@ class DataLoader():
         x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         h, w = list(x.shape[-2:])
         
-        # # Target tensors
-        # y_pretrained = self._pretained_targets(ims_aug)*3/2  #3/2x to scale up std
-        
         if split != 'test':
             # Number of bounding boxes
             y_n_bboxes = np.array([len(bbs)**0.75 for bbs in bboxes], dtype=np.float32)
             y_n_bboxes = (y_n_bboxes - 16.65)/6.07  # Normalize based on training image stats
             
+
             # Segmentation
             h_ds, w_ds = h//(2**self.n_downsamples), w//(2**self.n_downsamples)
             seg_masks = [cv2.resize(mask, (w_ds, h_ds), interpolation=cv2.INTER_AREA) for mask in seg_masks]
@@ -708,23 +712,34 @@ class DataLoader():
             targets = [utils.bbox_targets(bbs, h, w, self.n_downsamples) for bbs in bboxes]
             y_bboxes = np.stack(targets, axis=0)
 
-            # Centroid classification wts
-            centroid_wts = y_bboxes[:, 0, :, :].copy()        # Centroids
-            n_seg = np.sum(y_seg, axis=(1,2))                 # Segmentation area
-            centroid_scale = n_seg/(y_n_bboxes + 1)           # Num seg pixels/num centroids
-            centroid_wts *= centroid_scale[:, None, None]    
-            centroid_wts = np.maximum(y_seg, centroid_wts)    # Only seg area has non-zero wt
-            denom_norm = np.sum(centroid_wts, axis=(1,2), keepdims=True)
-            centroid_wts[(denom_norm == 0).squeeze()] = 1.0   # Weight all pixels equally if no bbs
-            centroid_wts /= np.sum(centroid_wts, axis=(1,2), keepdims=True)
+            # Bounding box spread over an 8x8 grid
+            y_bbox_spread = torch.from_numpy(y_bboxes[:, 0, :, :])  # Centroids
+            y_bbox_spread = self.adaptive_pool(y_bbox_spread)
+            y_bbox_spread = y_bbox_spread/(torch.sum(y_bbox_spread, dim=(1,2))[:,None,None])
+
+            # Segmentation weights
+            idxs = itertools.product(np.arange(h_ds), np.arange(w_ds))
+            idxs = np.array(list(idxs))
+
+            seg_wts = []
+            for b in range(batch_size):
+                centroid_idxs = np.array(np.where(y_bboxes[b, 0, :, :] == 1)).T
+                wts = scipy.spatial.distance_matrix(idxs, centroid_idxs)
+                wts = np.min(wts, axis=1)
+                wts = np.argsort(np.argsort(-wts))
+                wts = wts/np.sum(wts)
+                wts = wts.reshape(h_ds,w_ds)
+                seg_wts.append(wts)
+            seg_wts = np.stack(seg_wts, axis=0)
 
             # To tensors
             y_n_bboxes = torch.from_numpy(y_n_bboxes).unsqueeze(1)
+            y_bbox_spread = y_bbox_spread.unsqueeze(1)
             y_seg = torch.from_numpy(y_seg).unsqueeze(1)
             y_bboxes = torch.from_numpy(y_bboxes)
-            centroid_wts = torch.from_numpy(centroid_wts)
+            seg_wts = torch.from_numpy(seg_wts)
 
-            y = (y_n_bboxes, y_seg, y_bboxes, centroid_wts)
+            y = (y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts)
         else:
             y = None
 

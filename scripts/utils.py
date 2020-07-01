@@ -289,14 +289,12 @@ def bbox_targets(bboxes, h, w, n_downsamples=0):
     Returns:
         targets (ndarray): (5, h//2**n_downsamples, w//2**n_downsamples)
             0: centroid_mask
-            1: x_pos_mesh
-            2: y_pos_mesh
-            3: area_ratios_mesh
-            4: side_ratios_mesh
+            1: area_ratios_mesh
+            2: side_ratios_mesh
     """
     # Factor in downsampling of image as it passes through model
     h_ds, w_ds = h//(2**n_downsamples), w//(2**n_downsamples)
-    targets = np.zeros((5, h_ds, w_ds), dtype=np.float32)
+    targets = np.zeros((3, h_ds, w_ds), dtype=np.float32)
 
     # Normalize bounding boxes for original height and width of image
     bboxes_norm = normalize_bboxes(bboxes, h, w)
@@ -308,22 +306,18 @@ def bbox_targets(bboxes, h, w, n_downsamples=0):
     centroid_idxs = np.stack((y_centroid, x_centroid), axis=-1)
     centroid_idxs = np.floor(centroid_idxs*np.array([h_ds, w_ds])).astype(np.uint8)
 
-    # Centroid mask for NLLLoss 
+    # Centroid mask
     targets[0, centroid_idxs[:,0], centroid_idxs[:,1]] = 1
-
-    # Position meshes for MSE
-    targets[1, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(x_centroid)
-    targets[2, centroid_idxs[:,0], centroid_idxs[:,1]] = norm.ppf(y_centroid)
 
     # Area ratios mesh for MSE
     area_ratios = np.prod(bboxes_norm[:,-2:], axis=1)
     area_ratios_norm = (area_ratios**(1/AREA_RATIO['scale']) - AREA_RATIO['scaled_mean'])/AREA_RATIO['scaled_std']
-    targets[3, centroid_idxs[:,0], centroid_idxs[:,1]] = area_ratios_norm
+    targets[1, centroid_idxs[:,0], centroid_idxs[:,1]] = area_ratios_norm
 
     # Side ratios mesh for MSE 
     side_ratios = bboxes_norm[:,2]/np.sum(bboxes_norm[:,-2:], axis=1)
     side_ratios_norm = (side_ratios - SIDE_RATIO['mean'])/SIDE_RATIO['std']
-    targets[4, centroid_idxs[:,0], centroid_idxs[:,1]] = side_ratios_norm
+    targets[2, centroid_idxs[:,0], centroid_idxs[:,1]] = side_ratios_norm
 
     return targets
 
@@ -343,8 +337,8 @@ def bbox_pred_to_dims(x_c, y_c, area_ratio, side_ratio, w, h):
     Returns:
         bb_pred (list): [x, y, w, h] 
     """
-    x_c = int(np.round(norm.cdf(x_c)*w))
-    y_c = int(np.round(norm.cdf(y_c)*h))
+    x_c = int(np.round(x_c*w))
+    y_c = int(np.round(y_c*h))
     
     area_ratio = (area_ratio*AREA_RATIO['scaled_std'] + AREA_RATIO['scaled_mean'])**AREA_RATIO['scale']
     area_pred = area_ratio*w*h
@@ -361,7 +355,7 @@ def bbox_pred_to_dims(x_c, y_c, area_ratio, side_ratio, w, h):
 #endregion
 
 
-#region Segmentation heat map
+#region Wheat head segmentation mask
 def binarize(im):
     """Binarize an image into background (0) and foreground (1) using Otsu's method
     """
@@ -378,7 +372,7 @@ def remove_noise(im, kernel=np.ones((3,3), np.uint8), iterations=2):
     return im_denoise
 
 
-def segmentation_heat_map(im, bboxes, kernel=np.ones((5,5), dtype=np.uint8)):
+def wheat_head_segmentation_mask(im, bboxes, kernel=np.ones((5,5), dtype=np.uint8)):
     """Converts instance bounding boxes in an image to a single segmentation mask
 
     Args:
@@ -399,13 +393,8 @@ def segmentation_heat_map(im, bboxes, kernel=np.ones((5,5), dtype=np.uint8)):
         im_slice = binarize(im_slice)
         im_slice = remove_noise(im_slice)
 
-        im_dilated = cv2.dilate(im_slice, kernel, iterations=2)
-        im_eroded = cv2.erode(im_slice, kernel, iterations=2)
+        mask[y:y+h, x:x+w] += im_slice
 
-        mask_slice = (im_dilated + im_slice + im_eroded)/3
-
-        mask[y:y+h, x:x+w] += mask_slice
-
-    return mask
+    return np.minimum(1, mask)
 #endregion
 
