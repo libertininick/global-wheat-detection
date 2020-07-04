@@ -94,7 +94,7 @@ def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
 
     yh_bboxes = yh_bboxes.numpy()
     
-    bbs = []
+    bboxes = []
     # [confidence, xmin, ymin, width, height]
     for im_idx in range(b):
         n_bbs = n_bboxes[im_idx]
@@ -115,12 +115,12 @@ def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
         areas = yh_bboxes[im_idx, 0, i, j]
         sides = yh_bboxes[im_idx, 1, i, j]
 
-        bbs.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
-                             for (c, x, y, a, s)
-                             in zip(confidences, xs, ys, areas, sides)
-                            ]))
+        bboxes.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
+                                for (c, x, y, a, s)
+                                in zip(confidences, xs, ys, areas, sides)
+                               ]))
             
-    return bbs
+    return bboxes
 
 
 def cyclic_lr_scales(n_epochs, n_warmup, t=10, mult=2, max_t=160):
