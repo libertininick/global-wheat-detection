@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.2
+#       jupytext_version: 1.4.1
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env] *
+#     display_name: Python [conda env:wheat_env]
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -59,13 +59,12 @@ loader = pp.DataLoader(path=DATA_PATH, seed=123)
 # ## Load tensors
 
 # +
-batch_size=4
-resolution_out=512
+batch_size = 4
 
-x, y, (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
+x, y, (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, split='train')
 
 if y is not None:
-    y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
+    y_n_bboxes, y_bbox_spread, y_seg, y_bboxes = y
 
 # +
 print(x.shape)
@@ -81,14 +80,10 @@ print(y_bboxes.shape, torch.mean(y_bboxes[b,1:,i,j]), torch.std(y_bboxes[b,1:,i,
 
 # -
 
-fig, ax = plt.subplots(figsize=(10,10))
-_ = ax.hist(x.numpy().flatten(), bins=100)
-
-
 # ### Visualize Augmentations
 
 # +
-fig, axs = plt.subplots(figsize=(20, 7*batch_size), nrows=batch_size, ncols=3)
+fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
 
 for i in range(batch_size):
     _ = axs[i][0].imshow(ims_aug[i])
@@ -97,8 +92,6 @@ for i in range(batch_size):
         utils.draw_bboxes(axs[i][0], bb)
     
     _ = axs[i][1].imshow(y_seg[i][0], cmap='gray', vmin=0)
-    
-    _ = axs[i][2].imshow(seg_wts[i], cmap='gray', vmin=0)
 # -
 
 # ### Bounding box spread
@@ -167,25 +160,7 @@ for y,x in yh_centroids:
 
 # # `bbox_pred_to_dims`
 
-# +
-batch_size=2
-resolution_out=512
-
-x, y, (ims_aug, bboxes_aug) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
-
-if y is not None:
-    y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
-# -
-
-yh_seg = seg_wts.unsqueeze(1)
-yh_seg = (yh_seg/torch.max(yh_seg) - 0.5)*10
-
-
-fig, axs = plt.subplots(figsize=(10, 10*batch_size), nrows=batch_size)
-for i in range(batch_size):
-    _ = axs[i].imshow(yh_seg[i], cmap='gray', vmin=0)
-
-bboxes = training_utils.inference_output(y_n_bboxes, y_bbox_spread, yh_seg, y_bboxes[:,1:,:,:], 512, 512)
+bboxes = training_utils.inference_output(y_n_bboxes, y_bbox_spread, y_seg, y_bboxes[:,1:,:,:], 224, 224)
 
 fig, axs = plt.subplots(figsize=(10, 10*batch_size), nrows=batch_size)
 for i in range(batch_size):

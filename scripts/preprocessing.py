@@ -633,13 +633,11 @@ class DataLoader():
 
         return ims_aug, masks_aug, bboxes_aug
 
-    def load_batch(self, batch_size, resolution_out=None, split='train'):
+    def load_batch(self, batch_size, split='train'):
         """
 
         Args:
             batch_size (int): Number of images to load
-            resolution_out (int): Resolution to scale to. 
-                                  If `None` resolution will be same as loaded images.
             split (str): 'train' | 'validation' | 'test'
 
         Returns:
@@ -648,18 +646,17 @@ class DataLoader():
             y_bbox_spread (tensor): Probability spread of bounding boxes count over 8x8 grid [b, 1, 8, 8]
             y_seg (tensor): Bounding box segmentation mask [b, 1, h_ds, w_ds]
             y_bboxes (tensor): Bounding box area/shape targets [b, 3, h_ds, w_ds]
-            seg_wts (tensor): Weights for segmentation loss based on distance from bbox centroids [b, 1, h_ds, w_ds]
             ims (ndarray): Numpy images
             bboxes (ndarray): Ground truth bounding boxes
         """
         
         if split != 'test':
-            ims, seg_masks, bboxes = self._load_n_augment(batch_size, resolution_out, split)
+            ims, seg_masks, bboxes = self._load_n_augment(batch_size, 224, split)
+            x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         else:
             ims, bboxes = self._load_raw(batch_size, split)
+            x = torch.stack([self.normalizer(self.cropper(Image.fromarray(im))) for im in ims], dim=0)
 
-        # Input tensors
-        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         h, w = list(x.shape[-2:])
         
         if split != 'test':
@@ -683,32 +680,13 @@ class DataLoader():
             y_bbox_spread = self.adaptive_pool(y_bbox_spread)
             y_bbox_spread = y_bbox_spread/(torch.sum(y_bbox_spread, dim=(1,2))[:,None,None])
 
-            # Segmentation weights
-            idxs = itertools.product(np.arange(h_ds), np.arange(w_ds))
-            idxs = np.array(list(idxs))
-
-            seg_wts = []
-            for b in range(batch_size):
-                centroid_idxs = np.array(np.where(y_bboxes[b, 0, :, :] == 1)).T
-                if len(centroid_idxs) > 0:
-                    wts = scipy.spatial.distance_matrix(idxs, centroid_idxs)
-                    wts = np.min(wts, axis=1)
-                    wts = np.argsort(np.argsort(-wts))
-                else:
-                    wts = np.ones(h_ds*w_ds)
-                wts = wts/np.sum(wts)
-                wts = wts.reshape(h_ds,w_ds)
-                seg_wts.append(wts)
-            seg_wts = np.stack(seg_wts, axis=0)
-
             # To tensors
             y_n_bboxes = torch.from_numpy(y_n_bboxes).unsqueeze(1)
             y_bbox_spread = y_bbox_spread.unsqueeze(1)
             y_seg = torch.from_numpy(y_seg).unsqueeze(1)
             y_bboxes = torch.from_numpy(y_bboxes)
-            seg_wts = torch.from_numpy(seg_wts)
 
-            y = (y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts)
+            y = (y_n_bboxes, y_bbox_spread, y_seg, y_bboxes)
         else:
             y = None
 
