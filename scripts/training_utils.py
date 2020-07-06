@@ -8,13 +8,13 @@ from global_wheat_detection.scripts.preprocessing import DataLoader
 import global_wheat_detection.scripts.utils as utils
 
 mse_loss = nn.MSELoss()
-bce_loss = nn.BCEWithLogitsLoss(reduction='none')
+bce_loss = nn.BCEWithLogitsLoss()
 kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
 log_softmax = torch.nn.LogSoftmax(dim=-1)
 softmax = torch.nn.Softmax(dim=-1)
 
 def training_loss( yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
-                 , y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts
+                 , y_n_bboxes, y_bbox_spread, y_seg, y_bboxes
                  ):
     """ Combined training loss across training objectives
 
@@ -34,27 +34,23 @@ def training_loss( yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
         y_bbox_spread (tensor):  Target - Probability spread of bounding boxes count over 8x8 grid [b, 1, 8, 8]
         y_seg (tensor):          Tagret - Bounding box segmentation mask [b, 1, h_ds, w_ds]
         y_bboxes (tensor):       Target - Bounding box area/shape targets [b, 3, h_ds, w_ds]
-        seg_wts (tensor):        Weights for segmentation loss based on distance from bbox centroids [b, 1, h_ds, w_ds]
     """
 
     loss_n_bboxes = mse_loss(yh_n_bboxes, y_n_bboxes)
 
-    # b, c, h, w = list(yh_bbox_spread.shape)
-    # yh_bbox_spread = log_softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
-    # loss_bbox_spread = kl_loss(yh_bbox_spread, y_bbox_spread)
+    b, c, h, w = list(yh_bbox_spread.shape)
+    yh_bbox_spread = log_softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
+    loss_bbox_spread = kl_loss(yh_bbox_spread, y_bbox_spread)
     
-    loss_segmentation = bce_loss(yh_seg, y_seg).squeeze(1)
-    loss_segmentation = loss_segmentation*seg_wts
-    loss_segmentation = torch.sum(loss_segmentation, dim=(1,2))
-    loss_segmentation = torch.mean(loss_segmentation)
+    loss_segmentation = bce_loss(yh_seg, y_seg)
     
     b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
-    loss_bb_regressors, denom = 0, 2
+    loss_bb_regressors, denom = 0, 3
     if len(i) > 0:
         loss_bb_regressors = mse_loss(yh_bboxes[b, :, i, j], y_bboxes[b, 1:, i, j])
-        denom = 3
+        denom = 4
     
-    return loss_n_bboxes, loss_segmentation*3, loss_bb_regressors, denom
+    return loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom
 
 
 def cluster_centroids(yh_seg, n_bboxes, threshold=0.5, kernel=np.ones((5,5), np.uint8), n_init=10):
