@@ -542,29 +542,15 @@ class DataAugmentor():
 
 
 class DataLoader():
-    def __init__(self, path, n_downsamples=2, seed=None):
+    def __init__(self, path, n_downsamples=1, seed=None):
         
         self.augmentor = DataAugmentor()
         self.cropper =  transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224)])
-        # self.normalizer = transforms.Compose([ transforms.ToTensor()
-        #                                      , transforms.Normalize(mean=[0.485, 0.456, 0.406]
-        #                                                            , std=[0.229, 0.224, 0.225]
-        #                                                            )
-        #                                     ])
-
-        # # Set device
-        # self.device = 'cpu'
-        # if torch.cuda.is_available():
-        #     self.device = 'cuda:0'
-
-        # # Load pre-trained VGG
-        # vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
-        # vgg.eval()
-        # modules = list(vgg.features.children())
-        # self.feature_model = nn.Sequential(*modules)[:52]
-        # self.feature_model.to(self.device) # Move model to GPU
-        # self.layer_wts = np.load(f'{path}/vgg19_feature_layer_wts.npz')
-        # self.wts_keys = list(self.layer_wts.keys())
+        self.normalizer = transforms.Compose([ transforms.ToTensor()
+                                             , transforms.Normalize(mean=[0.485, 0.456, 0.406]
+                                                                   , std=[0.229, 0.224, 0.225]
+                                                                   )
+                                            ])
         
         self.rnd = np.random.RandomState(seed)
         self.path = path
@@ -583,27 +569,6 @@ class DataLoader():
 
         # Adaptive bounding box spread
         self.adaptive_pool = nn.AdaptiveAvgPool2d(output_size=(8,8))
-
-    def _normalize(self, im):
-        """Converts image from RBG to HLS and normalizes 
-        each by it's mean and std across each channel.
-        """
-
-        hls = cv2.cvtColor(im, cv2.COLOR_RGB2HLS).astype(np.float32)
-        hls_norm = np.log((hls + 1)/(255 + 2))
-        _mean = np.mean(hls_norm, axis=(0,1))
-        _std = np.std(hls_norm, axis=(0,1))
-        hls_norm = (hls_norm - _mean)/(_std + 1e-5)
-
-        return hls_norm
-
-    def _to_tensor(self, im):
-        # Swap loc of channels
-        im = np.transpose(im, axes=(2,0,1))
-
-        x = torch.from_numpy(im).type(torch.float32)
-
-        return x
 
     def _load_raw(self, batch_size, split):
         """Load images and bounding boxes from disk
@@ -668,25 +633,6 @@ class DataLoader():
 
         return ims_aug, masks_aug, bboxes_aug
 
-    @torch.no_grad()
-    def _pretained_targets(self, ims):
-        x = torch.stack([self.normalizer(self.cropper(Image.fromarray(im))) for im in ims], dim=0)
-        x = x.to(self.device)
-        x = self.feature_model(x)
-        x = x.to('cpu')
-
-        if self.device != 'cpu':
-            torch.cuda.empty_cache()
-
-        # Sample layer weights
-        wts_key = self.rnd.choice(self.wts_keys, size=1).item(0)
-        wts = self.layer_wts[wts_key]
-        wts /= np.mean(wts)
-        wts = torch.from_numpy(wts).view(1,-1,1,1).type(torch.float32)
-        x = x*wts
-
-        return x
-
     def load_batch(self, batch_size, resolution_out=None, split='train'):
         """
 
@@ -713,7 +659,7 @@ class DataLoader():
             ims, bboxes = self._load_raw(batch_size, split)
 
         # Input tensors
-        x = torch.stack([self._to_tensor(self._normalize(im)) for im in ims], dim=0)
+        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         h, w = list(x.shape[-2:])
         
         if split != 'test':
