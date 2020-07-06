@@ -39,21 +39,22 @@ def training_loss( yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
 
     loss_n_bboxes = mse_loss(yh_n_bboxes, y_n_bboxes)
 
-    b, c, h, w = list(yh_bbox_spread.shape)
-    yh_bbox_spread = log_softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
-    loss_bbox_spread = kl_loss(yh_bbox_spread, y_bbox_spread)
+    # b, c, h, w = list(yh_bbox_spread.shape)
+    # yh_bbox_spread = log_softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
+    # loss_bbox_spread = kl_loss(yh_bbox_spread, y_bbox_spread)
     
-    loss_segmentation = torch.sum(bce_loss(yh_seg, y_seg)*seg_wts)
+    loss_segmentation = bce_loss(yh_seg, y_seg).squeeze(1)
+    loss_segmentation = loss_segmentation*seg_wts
+    loss_segmentation = torch.sum(loss_segmentation, dim=(1,2))
+    loss_segmentation = torch.mean(loss_segmentation)
     
     b, i, j = torch.where(y_bboxes[:, 0, :, :] == 1)
-    loss_bb_regressors, denom = 0, 3
+    loss_bb_regressors, denom = 0, 2
     if len(i) > 0:
         loss_bb_regressors = mse_loss(yh_bboxes[b, :, i, j], y_bboxes[b, 1:, i, j])
-        denom = 4
+        denom = 3
     
-    loss = (loss_n_bboxes + loss_bbox_spread + loss_segmentation + loss_bb_regressors)/denom
-
-    return torch.clamp_max(loss, 6)
+    return loss_n_bboxes, loss_segmentation*3, loss_bb_regressors, denom
 
 
 def cluster_centroids(yh_seg, n_bboxes, threshold=0.5, kernel=np.ones((5,5), np.uint8), n_init=10):
@@ -101,8 +102,8 @@ def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
 
         # Bounding box centroids
         centroids = cluster_centroids(yh_seg[im_idx], n_bbs)
-        i,j = centroids[:, 0], centroids[:, 1]
-
+        i, j = centroids[:, 0], centroids[:, 1]
+        
         # Confidence
         confidences = yh_seg[im_idx][i,j]
 
