@@ -552,9 +552,12 @@ class WheatHeadDetector(nn.Module):
                 ): 
         super().__init__() 
 
-        self.downsampler = DownsampleBlock(in_channels=3, n_downsamples=2)
+        vgg = torch.hub.load('pytorch/vision:v0.6.0', 'vgg19_bn', pretrained=True)
+        vgg.eval()
+        vgg_modules = list(vgg.features.children())
+        self.vgg_featurizer = nn.Sequential(*vgg_modules)[:12]
         
-        self.featurizer = DenseDilationNet(in_channels=48
+        self.dense_net = DenseDilationNet(in_channels=128
                                            , n_feature_maps=n_feature_maps
                                            , block_size=block_size
                                            , n_blocks=n_blocks
@@ -564,17 +567,17 @@ class WheatHeadDetector(nn.Module):
                                            )
         
         self.num_bboxes_regressor = nn.Sequential(
-              nn.Linear(self.featurizer.n_global_features, out_features=int(self.featurizer.n_global_features//2))
+              nn.Linear(self.dense_net.n_global_features, out_features=int(self.dense_net.n_global_features//2))
             , nn.ReLU()
-            , nn.Linear(int(self.featurizer.n_global_features//2), out_features=1)
+            , nn.Linear(int(self.dense_net.n_global_features//2), out_features=1)
         )
         
-        self.bbox_spread_regressor = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=1, kernel_size=9)
+        self.bbox_spread_regressor = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=1, kernel_size=9)
         self.adaptive_pool = nn.AdaptiveMaxPool2d(output_size=(8,8))
         
-        self.segmentation_scorer = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=1, kernel_size=9)
+        self.segmentation_scorer = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=1, kernel_size=9)
         
-        self.bbox_scorer = PixelScorer(in_channels=self.featurizer.out_channels, out_channels=2, kernel_size=9)
+        self.bbox_scorer = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=2, kernel_size=9)
 
         self._init_wts()
 
@@ -585,8 +588,10 @@ class WheatHeadDetector(nn.Module):
                 m.bias = nn.init.constant_(m.bias, 0)
 
     def _featurize(self, x):
-        x, (h_pad, w_pad) = self.downsampler(x)
-        f, gfv = self.featurizer(x)
+        with torch.no_grad():
+            f = self.vgg_featurizer(x)
+        
+        f, gfv = self.dense_net(f)
 
         return f, gfv
 
