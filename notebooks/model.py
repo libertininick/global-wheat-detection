@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.2
+#       jupytext_version: 1.4.1
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env] *
+#     display_name: Python [conda env:wheat_env]
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -59,10 +59,9 @@ m = modules.WheatHeadDetector()
 
 # ## Data
 
-batch_size=24
-resolution_out=128
-x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
-y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
+batch_size=4
+x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, split='train')
+y_n_bboxes, y_bbox_spread, y_seg, y_bboxes = y
 
 # ## Training
 
@@ -76,8 +75,8 @@ with torch.no_grad():
     print(yh_seg.shape, torch.mean(yh_seg), torch.std(yh_seg))
     print(yh_bboxes.shape, torch.mean(yh_bboxes), torch.std(yh_bboxes))
 # -
-loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
-print(loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom)
+loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
+print(loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom)
 
 # ## Inference
 
@@ -104,31 +103,27 @@ optimizer = torch.optim.Adam(model.parameters(), lr=lower_lr)
 # +
 losses = []
 cycle_len = 120
-n_cycles = 30
+n_cycles = 25
 n = cycle_len*n_cycles
 idxs = np.arange(n)
 lr_scales = (np.sin(idxs/cycle_len*2*np.pi - 1.5) + 1)/2
+batch_size = 4
 
 for i in range(n):
-    resolution_out, batch_size = random.choice([(512, 2), (400, 2), (320, 4), (256, 4), (160, 8)])
-    
-    x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out)
+    x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size)
     yh = model._forward_train(x)
 
-    loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
-    loss = (loss_n_bboxes + loss_segmentation + loss_bb_regressors)/denom
-    losses.append((loss_n_bboxes.item(), loss_segmentation.item(), loss_bb_regressors.item()))
+    loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
+    loss = (loss_n_bboxes + loss_bbox_spread + 3*loss_segmentation + loss_bb_regressors)/denom
+    losses.append((loss_n_bboxes.item(), loss_bbox_spread.item(), loss_segmentation.item(), loss_bb_regressors.item()))
     
     loss.backward()
     
-    lr = optimizer.param_groups[0]['lr']
-    optimizer.param_groups[0]['lr'] = lr*batch_size # adj LR for batch size
-    optimizer.step()
     optimizer.param_groups[0]['lr'] = lr_scales[i]*lr_spread + lower_lr
-    
+    optimizer.step()
     optimizer.zero_grad()
     
-    if (i + 1)%(cycle_len//4) == 0:
+    if (i + 1)%(cycle_len) == 0:
         print(f'{(i + 1)/n:.0%}', np.round(np.mean(np.array(losses[-cycle_len:]), axis=0), 2))
 # -
 
