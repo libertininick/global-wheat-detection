@@ -546,11 +546,11 @@ class DataLoader():
         
         self.augmentor = DataAugmentor()
         self.cropper =  transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224)])
-        self.normalizer = transforms.Compose([ transforms.ToTensor()
-                                             , transforms.Normalize(mean=[0.485, 0.456, 0.406]
-                                                                   , std=[0.229, 0.224, 0.225]
-                                                                   )
-                                            ])
+        # self.normalizer = transforms.Compose([ transforms.ToTensor()
+        #                                      , transforms.Normalize(mean=[0.485, 0.456, 0.406]
+        #                                                            , std=[0.229, 0.224, 0.225]
+        #                                                            )
+        #                                     ])
 
         # # Set device
         # self.device = 'cpu'
@@ -583,6 +583,27 @@ class DataLoader():
 
         # Adaptive bounding box spread
         self.adaptive_pool = nn.AdaptiveAvgPool2d(output_size=(8,8))
+
+    def _normalize(self, im):
+        """Converts image from RBG to HLS and normalizes 
+        each by it's mean and std across each channel.
+        """
+
+        hls = cv2.cvtColor(im, cv2.COLOR_RGB2HLS).astype(np.float32)
+        hls_norm = np.log((hls + 1)/(255 + 2))
+        _mean = np.mean(hls_norm, axis=(0,1))
+        _std = np.std(hls_norm, axis=(0,1))
+        hls_norm = (hls_norm - _mean)/(_std + 1e-5)
+
+        return hls_norm
+
+    def _to_tensor(self, im):
+        # Swap loc of channels
+        im = np.transpose(im, axes=(2,0,1))
+
+        x = torch.from_numpy(im).type(torch.float32)
+
+        return x
 
     def _load_raw(self, batch_size, split):
         """Load images and bounding boxes from disk
@@ -692,14 +713,13 @@ class DataLoader():
             ims, bboxes = self._load_raw(batch_size, split)
 
         # Input tensors
-        x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
+        x = torch.stack([self._to_tensor(self._normalize(im)) for im in ims], dim=0)
         h, w = list(x.shape[-2:])
         
         if split != 'test':
             # Number of bounding boxes
             y_n_bboxes = np.array([len(bbs)**0.75 for bbs in bboxes], dtype=np.float32)
             y_n_bboxes = (y_n_bboxes - 16.65)/6.07  # Normalize based on training image stats
-            
 
             # Segmentation
             h_ds, w_ds = h//(2**self.n_downsamples), w//(2**self.n_downsamples)
@@ -724,9 +744,12 @@ class DataLoader():
             seg_wts = []
             for b in range(batch_size):
                 centroid_idxs = np.array(np.where(y_bboxes[b, 0, :, :] == 1)).T
-                wts = scipy.spatial.distance_matrix(idxs, centroid_idxs)
-                wts = np.min(wts, axis=1)
-                wts = np.argsort(np.argsort(-wts))
+                if len(centroid_idxs) > 0:
+                    wts = scipy.spatial.distance_matrix(idxs, centroid_idxs)
+                    wts = np.min(wts, axis=1)
+                    wts = np.argsort(np.argsort(-wts))
+                else:
+                    wts = np.ones(h_ds*w_ds)
                 wts = wts/np.sum(wts)
                 wts = wts.reshape(h_ds,w_ds)
                 seg_wts.append(wts)
