@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.1
+#       jupytext_version: 1.4.2
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env]
+#     display_name: Python [conda env:wheat_env] *
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -62,6 +62,7 @@ m = modules.WheatHeadDetector()
 batch_size=24
 resolution_out=128
 x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out, split='train')
+y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
 
 # ## Training
 
@@ -75,10 +76,8 @@ with torch.no_grad():
     print(yh_seg.shape, torch.mean(yh_seg), torch.std(yh_seg))
     print(yh_bboxes.shape, torch.mean(yh_bboxes), torch.std(yh_bboxes))
 # -
-
-
-
-training_utils.training_loss(*yh, *y)
+loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
+print(loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom)
 
 # ## Inference
 
@@ -95,63 +94,84 @@ utils.mAP(bboxes_pred, bboxes)
 
 # # Test training
 
+# +
 model = modules.WheatHeadDetector()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.00025)
 
-for i in range(1200):
-    print(i, end=' ')
-    
-    resolution_out, batch_size = random.choice([(512, 2), (400, 2), (300, 4), (256, 4)])
+lower_lr, upper_lr = 1e-5, 1e-3
+lr_spread = (upper_lr - lower_lr)
+optimizer = torch.optim.Adam(model.parameters(), lr=lower_lr)
+
+# +
+losses = []
+cycle_len = 120
+n_cycles = 30
+n = cycle_len*n_cycles
+idxs = np.arange(n)
+lr_scales = (np.sin(idxs/cycle_len*2*np.pi - 1.5) + 1)/2
+
+for i in range(n):
+    resolution_out, batch_size = random.choice([(512, 2), (400, 2), (320, 4), (256, 4), (160, 8)])
     
     x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=resolution_out)
     yh = model._forward_train(x)
 
-    loss = training_utils.training_loss(*yh, *y)
-    #print(f'{loss.item():.2f}')
+    loss_n_bboxes, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
+    loss = (loss_n_bboxes + loss_segmentation + loss_bb_regressors)/denom
+    losses.append((loss_n_bboxes.item(), loss_segmentation.item(), loss_bb_regressors.item()))
     
     loss.backward()
     
     lr = optimizer.param_groups[0]['lr']
     optimizer.param_groups[0]['lr'] = lr*batch_size # adj LR for batch size
     optimizer.step()
-    optimizer.param_groups[0]['lr'] = lr
+    optimizer.param_groups[0]['lr'] = lr_scales[i]*lr_spread + lower_lr
     
     optimizer.zero_grad()
+    
+    if (i + 1)%(cycle_len//4) == 0:
+        print(f'{(i + 1)/n:.0%}', np.round(np.mean(np.array(losses[-cycle_len:]), axis=0), 2))
+# -
+
+losses = np.array(losses)
+fig, ax = plt.subplots(figsize=(10,10))
+_ = ax.plot(losses[:,1])
+
+np.mean(losses[:10])
 
 # # Testing
 
-x, y, (ims, bboxes) = loader.load_batch(batch_size=4, resolution_out=512)
+batch_size = 4
+x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=512)
 
 yh = model._forward_inference(x)
-bboxes_pred = training_utils.inference_output(*yh, *list(x.shape[2:]))
-
-yh[2][0,0]
+yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes = yh
 
 # +
-fig, axs = plt.subplots(figsize=(20, 40), nrows=4, ncols=2)
+fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
 
-for i in range(4):
+for i in range(batch_size):
     _ = axs[i][0].imshow(ims[i])
     
     for bb in bboxes[i]:
         utils.draw_bboxes(axs[i][0], bb)
         
-    _ = axs[i][1].imshow(torch.sigmoid(yh[1][i][0])*torch.sigmoid(yh[2][i,0]), vmin=0, vmax=1)
+    _ = axs[i][1].imshow(yh_seg[i][0], cmap='gray')
 # -
 
-
-
-utils.mAP(bboxes_pred, bboxes_aug)
-
-fig, ax = plt.subplots(figsize=(8,8))
-ax.imshow(yh[0, 0, :, :])
-
-bboxes_pred
+bboxes_pred = training_utils.inference_output(*yh, w=512,h=512)
 
 # +
-fig, ax = plt.subplots(figsize=(10,10))
+fig, axs = plt.subplots(figsize=(15, 15*batch_size), nrows=4)
 
-_ = ax.imshow()
+for i in range(4):
+    _ = axs[i].imshow(ims[i])
+    
+    for bb in bboxes[i]:
+        utils.draw_bboxes(axs[i], bb, color='red')
+        
+    for bb in bboxes_pred[i]:
+        utils.draw_bboxes(axs[i], bb[1:], color='blue')
+        
+    #_ = axs[i][1].imshow(torch.sigmoid(yh[1][i][0])*torch.sigmoid(yh[2][i,0]), vmin=0, vmax=1)
 # -
-
-
+utils.mAP(bboxes_pred, bboxes)
