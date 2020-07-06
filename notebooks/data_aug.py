@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.1
+#       jupytext_version: 1.4.2
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env]
+#     display_name: Python [conda env:wheat_env] *
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -45,6 +45,7 @@ for part in path_parts[1:]:
         
 import global_wheat_detection.scripts.utils as utils
 import global_wheat_detection.scripts.preprocessing as pp
+import global_wheat_detection.scripts.training_utils as training_utils
 # -
 
 # # Data Loader
@@ -80,6 +81,10 @@ print(y_bboxes.shape, torch.mean(y_bboxes[b,1:,i,j]), torch.std(y_bboxes[b,1:,i,
 
 # -
 
+fig, ax = plt.subplots(figsize=(10,10))
+_ = ax.hist(x.numpy().flatten(), bins=100)
+
+
 # ### Visualize Augmentations
 
 # +
@@ -107,9 +112,10 @@ for i in range(batch_size):
     
     _ = axs[i][1].imshow(y_bbox_spread[i][0], cmap='gray', vmin=0)
 
+# + [markdown] heading_collapsed=true
 # # Clustering
 
-# +
+# + hidden=true
 h, w = 256, 256
 n_bboxes = 40
 centroid_idxs = np.random.randint(low=0, high=h, size=(n_bboxes,2))
@@ -124,7 +130,7 @@ yh = yh.reshape(h,w)/np.max(yh)
 yh += (np.random.rand(h,w)-0.5)
 yh = np.minimum(np.maximum(0, yh),1)
 
-# +
+# + hidden=true
 kernel = np.ones((5,5), np.uint8)
 yh_smooth = cv2.morphologyEx((yh > 0.5).astype(np.uint8), cv2.MORPH_OPEN, kernel)
 yh_smooth = cv2.morphologyEx(yh_smooth, cv2.MORPH_CLOSE, kernel)
@@ -138,12 +144,12 @@ num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(yh_smoot
 label_scale = (np.max(yh_pos) - np.min(yh_pos))/(np.max(labels) - np.min(labels))
 cc = labels[i,j]*label_scale
 yh_clustering = np.hstack((yh_pos, cc[:,None]))
-# -
 
+# + hidden=true
 kmeans = KMeans(n_clusters=n_bboxes, n_init=20, random_state=0).fit(yh_clustering[:,:2])
 yh_centroids = np.round(kmeans.cluster_centers_[:,:2]).astype(np.int64)
 
-# +
+# + hidden=true
 fig, axs = plt.subplots(figsize=(15,7), ncols=2)
 _ = axs[0].imshow(yh, cmap='gray', vmin=0, vmax=1)
 _ = axs[1].imshow(yh_smooth, cmap='gray', vmin=0, vmax=1)
@@ -171,39 +177,24 @@ if y is not None:
     y_n_bboxes, y_bbox_spread, y_seg, y_bboxes, seg_wts = y
 # -
 
-y_bboxes[0,1,:,:]
+yh_seg = seg_wts.unsqueeze(1)
+yh_seg = (yh_seg/torch.max(yh_seg) - 0.5)*10
 
-import global_wheat_detection.scripts.training_utils as training_utils
 
-training_utils.inference_output(y_n_bboxes, y_bbox_spread, y_seg, y_bboxes[:,1:,:,:], 512, 512)
+fig, axs = plt.subplots(figsize=(10, 10*batch_size), nrows=batch_size)
+for i in range(batch_size):
+    _ = axs[i].imshow(yh_seg[i], cmap='gray', vmin=0)
 
-for b in range(batch_size):
-    bboxes_true = pd.DataFrame(bboxes_aug[b]).sort_values(by=[0,1,2,3]).values
+bboxes = training_utils.inference_output(y_n_bboxes, y_bbox_spread, yh_seg, y_bboxes[:,1:,:,:], 512, 512)
+
+fig, axs = plt.subplots(figsize=(10, 10*batch_size), nrows=batch_size)
+for i in range(batch_size):
+    _ = axs[i].imshow(ims_aug[i])
     
-    i,j = np.where(y_bboxes[b,0,:,:] == 1)
-    bboxes_pred = [utils.bbox_pred_to_dims(*bbox, resolution_out, resolution_out) 
-                   for bbox 
-                   in y_bboxes[b,1:,i, j].T
-                  ]
-    bboxes_pred = pd.DataFrame(bboxes_pred).sort_values(by=[0,1,2,3]).values
-    
-    if bboxes_true.shape == bboxes_pred.shape:
-        bb_match = np.allclose(bboxes_true, bboxes_pred, rtol=1/64, atol=1)
-
-        ap = utils.average_precision(bboxes_pred, bboxes_true)
-
-        if bb_match and np.allclose(ap, 1.0):
-            print(b, bb_match, True)
-        else:
-            if np.allclose(ap, 1.0):
-                print(b, bb_match, True)
-            else:
-
-                for i in range(len(bboxes_true)):
-                    if not np.allclose(bboxes_true[i], bboxes_pred[i], rtol=1/64, atol=1):
-                        print(f'{b}  {i:>3} {bboxes_true[i]} {bboxes_pred[i]}')
-    else:
-        print(b, bboxes_true.shape, bboxes_pred.shape)
-        print(np.setdiff1d(bboxes_true,  bboxes_pred))
+    for bb in bboxes_aug[i]:
+        utils.draw_bboxes(axs[i], bb)
+        
+    for bb in bboxes[i][:,1:]:
+        utils.draw_bboxes(axs[i], bb, color='yellow')
 
 
