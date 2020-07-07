@@ -577,7 +577,7 @@ class WheatHeadDetector(nn.Module):
         
         self.segmentation_scorer = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=1, kernel_size=9)
         
-        self.bbox_scorer = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=2, kernel_size=9)
+        self.bbox_scorer = PixelScorer(in_channels=self.dense_net.out_channels, out_channels=3, kernel_size=9)
 
         self._init_wts()
 

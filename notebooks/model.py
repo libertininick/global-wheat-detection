@@ -46,11 +46,13 @@ from global_wheat_detection.scripts.preprocessing import DataLoader
 import global_wheat_detection.scripts.modules as modules
 import global_wheat_detection.scripts.utils as utils
 import global_wheat_detection.scripts.training_utils as training_utils
+
+DATA_PATH = os.path.abspath('../data')
+MODEL_PATH = os.path.abspath('../models')
 # -
 
 # # Data Loader
 
-DATA_PATH = os.path.abspath('../data')
 loader = DataLoader(path=DATA_PATH, seed=123)
 
 # # Model testing
@@ -74,9 +76,17 @@ with torch.no_grad():
     print(yh_bbox_spread.shape, torch.mean(yh_bbox_spread), torch.std(yh_bbox_spread))
     print(yh_seg.shape, torch.mean(yh_seg), torch.std(yh_seg))
     print(yh_bboxes.shape, torch.mean(yh_bboxes), torch.std(yh_bboxes))
+# +
+(loss_n_bboxes
+ , loss_bbox_spread
+ , loss_segmentation
+ , loss_bb_centroids
+ , loss_bb_regressors
+ , denom
+) = training_utils.training_loss(*yh, *y)
+
+print(loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_centroids, loss_bb_regressors, denom)
 # -
-loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
-print(loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom)
 
 # ## Inference
 
@@ -109,13 +119,31 @@ idxs = np.arange(n)
 lr_scales = (np.sin(idxs/cycle_len*2*np.pi - 1.5) + 1)/2
 batch_size = 4
 
+loss_scales = np.ones(5)
 for i in range(n):
     x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size)
     yh = model._forward_train(x)
 
-    loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_regressors, denom = training_utils.training_loss(*yh, *y)
-    loss = (loss_n_bboxes + loss_bbox_spread + 3*loss_segmentation + loss_bb_regressors)/denom
-    losses.append((loss_n_bboxes.item(), loss_bbox_spread.item(), loss_segmentation.item(), loss_bb_regressors.item()))
+    ( loss_n_bboxes
+    , loss_bbox_spread
+    , loss_segmentation
+    , loss_bb_centroids
+    , loss_bb_regressors
+    , denom
+    ) = training_utils.training_loss(*yh, *y)
+    
+    loss = (loss_n_bboxes*lr_scales[0]
+            + loss_bbox_spread*lr_scales[1] 
+            + loss_segmentation*lr_scales[2] 
+            + loss_bb_centroids*lr_scales[3] 
+            + loss_bb_regressors*lr_scales[4]
+           )/denom
+    losses.append((loss_n_bboxes.item()
+                   , loss_bbox_spread.item()
+                   , loss_segmentation.item()
+                   , loss_bb_centroids.item()
+                   , loss_bb_regressors.item()
+                  ))
     
     loss.backward()
     
@@ -124,8 +152,17 @@ for i in range(n):
     optimizer.zero_grad()
     
     if (i + 1)%(cycle_len) == 0:
-        print(f'{(i + 1)/n:.0%}', np.round(np.mean(np.array(losses[-cycle_len:]), axis=0), 2))
+        print(f'--{(i + 1)/n:.0%}', np.round(np.median(np.array(losses[-cycle_len:]), axis=0), 2))
+        loss_scales = np.median(np.array(losses[-cycle_len:]), axis=0)
+        loss_scales = (np.max(loss_scales)/loss_scales)**0.5
+    else:
+        if (i + 1)%(cycle_len//10) == 0:
+            print(f'{(i + 1)%cycle_len/cycle_len:.0%}', end=' ')
 # -
+
+loss_scales
+
+torch.save(model.state_dict(), f'{MODEL_PATH}/wheat_head_2.pth')
 
 losses = np.array(losses)
 fig, ax = plt.subplots(figsize=(10,10))
@@ -136,13 +173,13 @@ np.mean(losses[:10])
 # # Testing
 
 batch_size = 4
-x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size, resolution_out=512)
+x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size)
 
 yh = model._forward_inference(x)
 yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes = yh
 
 # +
-fig, axs = plt.subplots(figsize=(20, 10*batch_size), nrows=batch_size, ncols=2)
+fig, axs = plt.subplots(figsize=(20, 7*batch_size), nrows=batch_size, ncols=3)
 
 for i in range(batch_size):
     _ = axs[i][0].imshow(ims[i])
@@ -151,9 +188,11 @@ for i in range(batch_size):
         utils.draw_bboxes(axs[i][0], bb)
         
     _ = axs[i][1].imshow(yh_seg[i][0], cmap='gray')
+    
+    _ = axs[i][2].imshow(yh_bbox_spread[i][0], cmap='gray')
 # -
 
-bboxes_pred = training_utils.inference_output(*yh, w=512,h=512)
+bboxes_pred = training_utils.inference_output(*yh, w=224,h=224)
 
 # +
 fig, axs = plt.subplots(figsize=(15, 15*batch_size), nrows=4)
@@ -170,3 +209,5 @@ for i in range(4):
     #_ = axs[i][1].imshow(torch.sigmoid(yh[1][i][0])*torch.sigmoid(yh[2][i,0]), vmin=0, vmax=1)
 # -
 utils.mAP(bboxes_pred, bboxes)
+
+
