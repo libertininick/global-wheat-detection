@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.4.1
+#       jupytext_version: 1.4.2
 #   kernelspec:
-#     display_name: Python [conda env:wheat_env]
+#     display_name: Python [conda env:wheat_env] *
 #     language: python
 #     name: conda-env-wheat_env-py
 # ---
@@ -25,6 +25,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.ticker as plticker
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -103,17 +104,16 @@ utils.mAP(bboxes_pred, bboxes)
 
 # # Test training
 
-# +
 model = modules.WheatHeadDetector()
 
-lower_lr, upper_lr = 1e-5, 1e-3
+lower_lr, upper_lr = 1e-5, 3e-3
 lr_spread = (upper_lr - lower_lr)
 optimizer = torch.optim.Adam(model.parameters(), lr=lower_lr)
 
 # +
 losses = []
 cycle_len = 120
-n_cycles = 25
+n_cycles = 20
 n = cycle_len*n_cycles
 idxs = np.arange(n)
 lr_scales = (np.sin(idxs/cycle_len*2*np.pi - 1.5) + 1)/2
@@ -160,36 +160,66 @@ for i in range(n):
             print(f'{(i + 1)%cycle_len/cycle_len:.0%}', end=' ')
 # -
 
-loss_scales
-
-torch.save(model.state_dict(), f'{MODEL_PATH}/wheat_head_2.pth')
-
-losses = np.array(losses)
-fig, ax = plt.subplots(figsize=(10,10))
-_ = ax.plot(losses[:,1])
-
-np.mean(losses[:10])
+torch.save(model.state_dict(), f'{MODEL_PATH}/wheat_head_5.pth')
 
 # # Testing
 
 batch_size = 4
 x, y, (ims, bboxes) = loader.load_batch(batch_size=batch_size)
 
+# +
 yh = model._forward_inference(x)
 yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes = yh
 
+n_bboxes = (yh_n_bboxes.numpy().squeeze()*6.07 + 16.65)**(1.33)
+
+b, c, h, w = list(yh_bbox_spread.shape)
+yh_bbox_spread = nn.Softmax(dim=-1)(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
+
 # +
-fig, axs = plt.subplots(figsize=(20, 7*batch_size), nrows=batch_size, ncols=3)
+im_idx = 0
+
+grid_ct = np.round(yh_bbox_spread[im_idx][0].numpy()*n_bboxes[im_idx],2)
+
+p1 = torch.sigmoid(yh_seg[im_idx][0])
+p2 = torch.sigmoid(yh_bboxes[im_idx][0])
+p3 = p1*p2
+
+fig, ax = plt.subplots(figsize=(10,10))
+_ = ax.imshow(p3 > 0.7, cmap='gray', vmin=0, vmax=1)
+
+step_size = 112//8
+
+loc = plticker.MultipleLocator(base=step_size)
+ax.xaxis.set_major_locator(loc)
+ax.yaxis.set_major_locator(loc)
+
+# Add the grid
+ax.grid(which='major', axis='both', linestyle='-')
+
+# Add some labels to the gridsquares
+for j in range(8):
+    y=step_size/2 + j*step_size
+    for i in range(8):
+        x=step_size/2.+float(i)*step_size
+        ax.text(x,y,f'{grid_ct[j,i]:.2f}',color='r',ha='center',va='center')
+
+# +
+fig, axs = plt.subplots(figsize=(20, 5*batch_size), nrows=batch_size, ncols=4)
 
 for i in range(batch_size):
     _ = axs[i][0].imshow(ims[i])
     
     for bb in bboxes[i]:
         utils.draw_bboxes(axs[i][0], bb)
-        
-    _ = axs[i][1].imshow(yh_seg[i][0], cmap='gray')
     
-    _ = axs[i][2].imshow(yh_bbox_spread[i][0], cmap='gray')
+    p1 = torch.sigmoid(yh_seg[i][0])
+    p2 = torch.sigmoid(yh_bboxes[i][0])
+    p3 = p1*p2
+    
+    _ = axs[i][1].imshow(p1, cmap='gray', vmin=0, vmax=1)
+    _ = axs[i][2].imshow(p2, cmap='gray', vmin=0, vmax=1)
+    _ = axs[i][3].imshow(p3 > 0.7, cmap='gray', vmin=0, vmax=1)
 # -
 
 bboxes_pred = training_utils.inference_output(*yh, w=224,h=224)

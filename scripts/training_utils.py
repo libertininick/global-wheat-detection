@@ -55,26 +55,29 @@ def training_loss( yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes
     return loss_n_bboxes, loss_bbox_spread, loss_segmentation, loss_bb_centroids, loss_bb_regressors, denom
 
 
-def cluster_centroids(yh_seg, n_bboxes, threshold=0.5, kernel=np.ones((5,5), np.uint8), n_init=10):
+def cluster_centroids(probs, n_bboxes, threshold=0.5, kernel=np.ones((3,3), np.uint8), n_init=10):
 
     # Threshold segmentation predictions
-    yh = (yh_seg >= threshold).astype(np.uint8)
+    yh = (probs >= threshold).astype(np.uint8)
 
-    # Morphological smoothing on threshold predictions
-    yh_smooth = cv2.morphologyEx(yh, cv2.MORPH_OPEN, kernel)
-    yh_smooth = cv2.morphologyEx(yh_smooth, cv2.MORPH_CLOSE, kernel)
+    # # Morphological smoothing on threshold predictions
+    # yh_smooth = cv2.morphologyEx(yh, cv2.MORPH_OPEN, kernel)
+    # yh_smooth = cv2.morphologyEx(yh_smooth, cv2.MORPH_CLOSE, kernel)
 
     # Positional extraction 
-    i,j = np.where(yh_smooth == 1)
+    i,j = np.where(yh == 1)
     yh_pos = np.stack((i,j), axis=-1)
-
-    # Clustering on positional data
-    kmeans = KMeans(n_clusters=n_bboxes, n_init=n_init, random_state=0).fit(yh_pos)
     
-    # Extract centroids
-    yh_centroids = np.round(kmeans.cluster_centers_).astype(np.int64)
-    
-    return yh_centroids
+    if len(i) < n_bboxes:
+        return cluster_centroids(probs, n_bboxes, threshold*0.8)
+    else:
+        # Clustering on positional data
+        kmeans = KMeans(n_clusters=n_bboxes, n_init=n_init, random_state=0).fit(yh_pos)
+        
+        # Extract centroids
+        yh_centroids = np.round(kmeans.cluster_centers_).astype(np.int64)
+        
+        return yh_centroids
 
 
 def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
@@ -87,37 +90,44 @@ def inference_output(yh_n_bboxes, yh_bbox_spread, yh_seg, yh_bboxes, w, h):
     # yh_bbox_spread = softmax(yh_bbox_spread.view(b,c,-1)).view(b,c,h,w)
 
     # Segmentation mask
-    yh_seg = torch.sigmoid(yh_seg[:,0,:,:])
-    yh_seg = yh_seg.numpy()
-    b, h_ds, w_ds = yh_seg.shape  # Output shape
-
-    yh_bboxes = yh_bboxes.numpy()
+    yh_seg = torch.sigmoid(yh_seg[:,0,:,:]).numpy()
+    b, h_ds, w_ds = yh_seg.shape 
+    
+    # Centroid mask
+    yh_centroid = torch.sigmoid(yh_bboxes[:,0,:,:]).numpy()
+    
+    # Bound box shapes
+    yh_bbox_shapes = yh_bboxes[:,1:,:,:].numpy()
     
     bboxes = []
     # [confidence, xmin, ymin, width, height]
     for im_idx in range(b):
         n_bbs = n_bboxes[im_idx]
 
-        # Bounding box centroids
-        centroids = cluster_centroids(yh_seg[im_idx], n_bbs)
-        i, j = centroids[:, 0], centroids[:, 1]
-        
-        # Confidence
-        confidences = yh_seg[im_idx][i,j]
+        if n_bbs > 0:
+            # Centroid probabilities
+            centroid_probs = yh_seg[im_idx]*yh_centroid[im_idx]
 
-        # Normalize centroids
-        centroids_norm = centroids/np.array([h_ds, w_ds])
-        xs = centroids_norm[:, 1]
-        ys = centroids_norm[:, 0]
+            # Bounding box centroids
+            centroids = cluster_centroids(centroid_probs, n_bbs)
+            i, j = centroids[:, 0], centroids[:, 1]
+            
+            # Confidence
+            confidences = centroid_probs[i,j]
 
-        # Area and side predictions @ centroids
-        areas = yh_bboxes[im_idx, 0, i, j]
-        sides = yh_bboxes[im_idx, 1, i, j]
+            # Normalize centroids
+            centroids_norm = centroids/np.array([h_ds, w_ds])
+            xs = centroids_norm[:, 1]
+            ys = centroids_norm[:, 0]
 
-        bboxes.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
-                                for (c, x, y, a, s)
-                                in zip(confidences, xs, ys, areas, sides)
-                               ]))
+            # Area and side predictions @ centroids
+            areas = yh_bbox_shapes[im_idx, 0, i, j]
+            sides = yh_bbox_shapes[im_idx, 1, i, j]
+
+            bboxes.append(np.array([[c] + utils.bbox_pred_to_dims(x, y, a, s, w, h) 
+                                    for (c, x, y, a, s)
+                                    in zip(confidences, xs, ys, areas, sides)
+                                ]))
             
     return bboxes
 
