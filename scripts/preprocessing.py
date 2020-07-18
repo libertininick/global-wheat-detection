@@ -633,12 +633,13 @@ class DataLoader():
 
         return ims_aug, masks_aug, bboxes_aug
 
-    def load_batch(self, batch_size, split='train'):
+    def load_batch(self, batch_size, split='train', augment=True):
         """
 
         Args:
             batch_size (int): Number of images to load
             split (str): 'train' | 'validation' | 'test'
+            augment (bool): If True, augment images
 
         Returns:
             x (tensor): Normalized input images [b, c, h, w]
@@ -650,7 +651,7 @@ class DataLoader():
             bboxes (ndarray): Ground truth bounding boxes
         """
         
-        if split != 'test':
+        if split != 'test' and augment:
             ims, seg_masks, bboxes = self._load_n_augment(batch_size, 224, split)
             x = torch.stack([self.normalizer(Image.fromarray(im)) for im in ims], dim=0)
         else:
@@ -659,7 +660,7 @@ class DataLoader():
 
         h, w = list(x.shape[-2:])
         
-        if split != 'test':
+        if split != 'test' and augment:
             # Number of bounding boxes
             y_n_bboxes = np.array([len(bbs)**0.75 for bbs in bboxes], dtype=np.float32)
             y_n_bboxes = (y_n_bboxes - 16.65)/6.07  # Normalize based on training image stats
